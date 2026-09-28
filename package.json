@@ -1,6 +1,6 @@
 {
   "name": "tauri-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "RapidMX native desktop and mobile client. A Tauri v2 shell that signs in to any self-hosted RapidMX server and holds multiple accounts open at once.",
   "type": "module",
   "private": true,

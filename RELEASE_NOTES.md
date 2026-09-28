@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0
+
 RapidMX's native desktop and mobile client - a Tauri v2 shell that replaces the `electron-client`
 proof-of-concept. Signs in to any self-hosted RapidMX server via OAuth2/PKCE against auth-server's
 real authorization endpoints, holding multiple accounts' refresh tokens in the OS keychain, and lays
