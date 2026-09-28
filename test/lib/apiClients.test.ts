@@ -12,7 +12,7 @@ vi.mock("../../src/lib/tauri.js", () => ({
     getSessionToken: (...args: unknown[]) => getSessionTokenMock(...args),
 }));
 
-vi.mock("@rapidmx/react-shared/util/api.js", () => ({
+vi.mock("@rapidmx/web-client/lib/util/api.js", () => ({
     createApiClient: (...args: unknown[]) => createApiClientMock(...args),
 }));
 

@@ -164,6 +164,15 @@ describe("installNativeSearchTransport", () => {
     });
 
     it("logs a warning and does not throw when setLocalIndexTransport isn't exported yet", async () => {
+        // Explicitly simulated, not incidental: `@rapidmx/web-client` genuinely exports
+        // `setLocalIndexTransport` today (the react-shared merge and web-client's own swappable-
+        // transport work have both landed), so this module is mocked here to lack it on purpose -
+        // this test is about `installNativeSearchTransport()`'s own defensive handling of an absent
+        // export, not about whether the export happens to be missing in this environment right now.
+        // The property must still be explicitly declared (`undefined`, not omitted) - Vitest 5's
+        // mock proxy throws on any *undeclared* property access, which would trip the code under
+        // test's own `try/catch` and produce a different warning than the one this test asserts on.
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport: undefined }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
         await expect(install(resolver)).resolves.toBeUndefined();
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("does not export setLocalIndexTransport"));

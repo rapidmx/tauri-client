@@ -24,7 +24,7 @@
  * single call - `createApiClient()` itself calls `getAccessToken` fresh before every request rather
  * than caching it, so this module doesn't need its own caching/refresh-scheduling logic either.
  */
-import { createApiClient, type ApiClient } from "@rapidmx/react-shared/util/api.js";
+import { createApiClient, type ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import { getSessionToken, type AccountSummary } from "./tauri.js";
 
 const clients = new Map<string, ApiClient>();

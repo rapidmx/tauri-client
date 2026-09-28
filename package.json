@@ -25,7 +25,6 @@
     "trailingComma": "es5"
   },
   "dependencies": {
-    "@rapidmx/react-shared": "link:../react-shared",
     "@rapidmx/web-client": "link:../web-client",
     "@rapidrest/react": "link:../../rapidrest/react",
     "@tauri-apps/api": "^2.11.1",

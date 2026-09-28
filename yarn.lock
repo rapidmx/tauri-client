@@ -384,12 +384,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@link:../react-shared::locator=tauri-client%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "@rapidmx/react-shared@link:../react-shared::locator=tauri-client%40workspace%3A."
-  languageName: node
-  linkType: soft
-
 "@rapidmx/web-client@link:../web-client::locator=tauri-client%40workspace%3A.":
   version: 0.0.0-use.local
   resolution: "@rapidmx/web-client@link:../web-client::locator=tauri-client%40workspace%3A."
@@ -3668,7 +3662,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "tauri-client@workspace:."
   dependencies:
-    "@rapidmx/react-shared": "link:../react-shared"
     "@rapidmx/web-client": "link:../web-client"
     "@rapidrest/react": "link:../../rapidrest/react"
     "@tauri-apps/api": "npm:^2.11.1"

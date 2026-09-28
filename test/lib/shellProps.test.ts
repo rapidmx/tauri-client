@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApiClient } from "@rapidmx/react-shared/util/api.js";
+import type { ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import type { AccountSummary } from "../../src/lib/tauri.js";
 import { resolveWwwShellProps } from "../../src/lib/shellProps.js";
 

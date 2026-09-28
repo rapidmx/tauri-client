@@ -453,10 +453,67 @@ touching `search/` again.
   `electron-client`'s own NOTES.md documents for itself), and re-running the full JS/TS suite (it
   was untouched this pass - no reason to expect it changed, but it wasn't re-verified either).
 
+### 2026-09-27 (fourth pass) — `@rapidmx/react-shared` merged into `@rapidmx/web-client`; import paths updated
+
+A parallel effort (happening concurrently in `react-shared` and `web-client`, not this repo) folds
+`react-shared` entirely into `web-client`: its whole `src/` tree, including the brand-new
+`util/apiClientContext.ts` (`ApiClientContext`/`useApiClient()`, added the same day specifically for
+this app's benefit - see the third-pass/second-pass "Unverified/guessed" item 4 and "Future work"
+above, both written *before* that file existed), moves unchanged into a new `lib/` directory inside
+`web-client`, exported at `@rapidmx/web-client/lib/*.js`. This repo doesn't use `ApiClientContext`
+yet (nothing here imports it - confirmed by grep), so there was nothing to migrate for that symbol
+specifically, but the path now exists for whoever picks up that future-work item.
+
+- **Every import of `@rapidmx/react-shared/util/api.js` rewritten to
+  `@rapidmx/web-client/lib/util/api.js`**: `src/lib/apiClients.ts`, `src/lib/shellProps.ts`,
+  `test/lib/apiClients.test.ts` (a `vi.mock()` call, not an `import`), `test/lib/shellProps.test.ts`.
+  These four were the only real import-path hits in `src/**`/`test/**` - `rapidmxShim.ts`,
+  `searchTransport.ts`, `tauri.ts`, `routes.ts`, and `mailboxRegistry.ts` only ever mentioned
+  `@rapidmx/react-shared` in prose doc comments (explaining behavior, not importing anything from
+  it), left as-is; `README.md`/`RELEASE_NOTES.md` also mention it narratively (describing past
+  sessions) and were likewise left alone - updating historical narrative isn't this task's job.
+- **`package.json`**: removed the `"@rapidmx/react-shared": "link:../react-shared"` dependency line
+  entirely. `"@rapidmx/web-client": "link:../web-client"` unchanged.
+- **`yarn install` still resolves `@rapidmx/react-shared@link:../react-shared` transitively** - not
+  a mistake. `web-client`'s own `package.json` still lists `"@rapidmx/react-shared": "^0.22.0"` as of
+  this session (its side of the merge hadn't landed yet - confirmed `D:\github\rapidmx\web-client\lib\`
+  does not exist on disk, and `web-client`'s `package.json` `exports` map has no `./lib/*.js` entry,
+  only the existing `./*.js` -> `./dist/apps/*.js`). This should disappear on its own once
+  `web-client`'s own migration lands and its `package.json` drops the dependency.
+- **Verification: lint clean (`yarn lint`, 0 errors), but `yarn build` and `yarn test` both fail**,
+  and both failures are the expected other-side-of-the-race, not a bug introduced here: `tsc` reports
+  `TS2307: Cannot find module '@rapidmx/web-client/lib/util/api.js'` for the two `src/` files above,
+  and `vitest` fails all 5 `apiClients.test.ts` cases the same way (Vite's `import-analysis` can't
+  resolve the same path at runtime) - `shellProps.test.ts`'s type-only `import type { ApiClient }`
+  from the same path doesn't trip `vitest` (erased before bundling) but does still trip `tsc`'s
+  `--noEmit` check. All other 92 tests pass. **This is expected to self-resolve once `web-client`
+  finishes its own migration and starts publishing `./lib/*.js`** (or once its local checkout gets a
+  `lib/` directory + matching `exports` entry) - re-run `yarn build`/`yarn test` then; do not chase
+  this as a real regression in this repo without first re-checking whether `web-client/lib/` exists
+  yet.
+
+### 2026-09-27 (fifth pass) — the race resolved; full green, plus one obsolete test fixed
+
+`web-client`'s own side of the merge landed (see its NOTES.md and the third-pass Rust-verification
+entry above - both same day). `yarn install` + `yarn build` + `yarn test` all now pass for real:
+**97/97 tests, 100% coverage**, no `TS2307` errors.
+
+One test needed a real fix, not just a re-run: `test/lib/searchTransport.test.ts`'s "logs a warning
+... when `setLocalIndexTransport` isn't exported yet" relied on the *real* `@rapidmx/web-client`
+genuinely lacking that export - true when written, false now that the merge landed. It started
+failing (0 warn calls - the real setter path ran instead). Fixed by explicitly mocking the module to
+simulate absence (`vi.doMock(modulePath, () => ({ setLocalIndexTransport: undefined }))`) rather than
+relying on incidental reality - this is what the *other* two tests in that `describe` block already
+did correctly. One subtlety worth remembering: Vitest 5's mock proxy throws on any **undeclared**
+property access (not just missing ones) - `() => ({})` alone isn't enough to simulate "no such
+export"; the property must be explicitly present and `undefined`.
+
 ## Future work
 
-- Run a real `cargo check` (at minimum) against `src-tauri/` and work through "Unverified Rust API
-  assumptions" above in the order listed - that's the fastest path to a genuinely building repo.
+- Work through "Unverified Rust API assumptions" above if anything there is still open - most were
+  already resolved by the third-pass full `cargo check`/`clippy`/`test`/`build --release` run (see
+  "Verification status" near the top of this file); that section's per-item detail is now historical
+  record of what needed fixing, not a to-do list.
 - **The single biggest open question** (see the 2026-09-27 second-pass session log's "Unverified/
   guessed" item 4): most of `@rapidmx/web-client`'s own `apps/www` page components have no way to
   reach a per-account bearer-token `ApiClient` at all - only 6 of `react-shared`'s REST modules

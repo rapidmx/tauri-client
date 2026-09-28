@@ -24,7 +24,7 @@
  * defaults there is acceptable") - so an `undefined` here is a real, working degraded state, not a
  * crash.
  */
-import type { ApiClient } from "@rapidmx/react-shared/util/api.js";
+import type { ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import type { AccountSummary } from "./tauri.js";
 
 /** Mirrors `react-shared/src/branding/brandingApi.ts`'s `Branding` - not imported from there
