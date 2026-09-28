@@ -1,0 +1,67 @@
+/*
+ * Copyright (C) 2026 Jean-Philippe Steinmetz
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * Deliberately plain, unbranded CSS - this session's frontend is a placeholder proving the window
+ * boots and can invoke the Rust-side OAuth flow (see .claude/NOTES.md). The real UI is the CSR
+ * mount of @rapidmx/web-client's own page components (and its existing styling) once
+ * @rapidrest/react's mountRouter() lands - see src/lib/webClientBridge.ts.
+ */
+
+:root {
+    color-scheme: light dark;
+    font-family:
+        system-ui,
+        -apple-system,
+        "Segoe UI",
+        sans-serif;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+}
+
+.app-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    max-width: 32rem;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+.account-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.account-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px solid currentColor;
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+}
+
+.add-account-form {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.add-account-form input {
+    flex: 1;
+}
+
+.status-message {
+    min-height: 1.25rem;
+}
+
+.status-message[data-tone="error"] {
+    color: #c0392b;
+}

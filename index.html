@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <!--
+          A real Content-Security-Policy is set declaratively in src-tauri/tauri.conf.json's
+          `app.security.csp` (Tauri injects it itself, and can additionally sign/verify asset
+          integrity - a <meta> tag here can't do that) rather than here - see that file's own
+          comment for the policy and why it's stricter than electron-client's dev-mode carve-out
+          needed to be (Tauri's dev server asset injection doesn't need `'unsafe-inline'`).
+        -->
+        <title>RapidMX</title>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>

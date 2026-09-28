@@ -1,0 +1,97 @@
+[package]
+name = "tauri-client"
+version = "0.1.0"
+description = "RapidMX native desktop and mobile client"
+authors = ["Jean-Philippe Steinmetz <rapidrests@gmail.com>"]
+license = "MPL-2.0"
+repository = "https://github.com/rapidmx/tauri-client"
+edition = "2021"
+# Keep in step with tauri-plugin-deep-link's own MSRV (2.x requires Rust >= 1.77.2 as of this
+# writing - see .claude/NOTES.md's package-research entry). Not verified against a real toolchain
+# in this sandbox (no cargo/rustc available - see NOTES.md).
+rust-version = "1.77.2"
+
+# See https://v2.tauri.app/develop/#project-structure - this [lib] block (name + crate-type) is
+# what lets src/lib.rs's `run()` be shared between the desktop main.rs entry point and the mobile
+# entry point tauri::generate_context!()/tauri::mobile_entry_point wires up. Without it a mobile
+# build has nothing to link against.
+[lib]
+name = "tauri_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# --- Tauri core + plugins --------------------------------------------------------------------
+tauri = { version = "2.11", features = [] }
+tauri-plugin-deep-link = "2.4"
+# `opener`, not `shell` - Tauri v2's dedicated "open a URL/file in the OS default handler" plugin
+# (the task briefing's `shell`/`opener` phrasing covers both; `opener` is the one purpose-built for
+# this exact "open the system browser to the OAuth authorize URL" use, see step 1 of the sign-in
+# flow this repo's README describes). `tauri-plugin-shell` is not depended on - nothing here needs
+# to spawn an arbitrary shell command.
+tauri-plugin-opener = "2.5"
+# Third-party (not a first-party tauri-apps/* plugin), pre-1.0 (0.0.3-beta.1 as of this writing) -
+# see .claude/NOTES.md's package-research entry for why this exact crate was chosen (its README
+# explicitly covers Android Keystore/iOS Keychain/Windows Credential Manager/macOS Keychain/Linux
+# Secret Service, matching this task's own requirement) and the risk that pins.
+tauri-plugin-secure-keystore = "0.0.3-beta.1"
+
+# --- Serialization -----------------------------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- HTTP (token/session-token exchange, .well-known/rapidmx/server-info) ----------------------
+# rustls-tls (not native-tls/openssl) so there is no extra system OpenSSL dependency to cross-build
+# for mobile - matches the same reasoning as rusqlite's *-vendored-openssl feature below.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# --- Native Tier 2 full-text search index (one encrypted index per account) --------------------
+# Plain `bundled` SQLite (not SQLCipher) - JP's standing preference is libsodium over OpenSSL in
+# every project, and SQLCipher's open-source build has no non-OpenSSL crypto provider option (its
+# other providers - CommonCrypto, NSS, LibTomCrypt - aren't what was asked for either, and
+# libsqlite3-sys only wires up the OpenSSL one regardless). Encryption at rest is therefore done
+# ourselves, one level up: every account's index lives ONLY in-memory as a plain (SQLite-level
+# unencrypted) connection - `search/mod.rs` never writes that connection's pages to disk - and is
+# persisted as a single opaque, libsodium-XChaCha20-Poly1305-encrypted blob via
+# `Connection::serialize()`/`deserialize()` (hence the `serialize` feature below), the same
+# discard-and-rebuild-on-decrypt-failure posture the SQLCipher design already had. FTS5 is not a
+# separate rusqlite Cargo feature (confirmed against rusqlite's own Cargo.toml); the bundled
+# amalgamation compiles with `-DSQLITE_ENABLE_FTS5` unconditionally. `functions` is included for
+# the scalar/aggregate function support `search/schema.rs` may need later (custom ranking helpers).
+rusqlite = { version = "0.40", features = ["bundled", "functions", "serialize"] }
+
+# --- Encryption at rest for the native search index (see rusqlite comment above) - jedisct1's own
+# safe Rust bindings, not raw libsodium-sys-stable FFI. Ships prebuilt libsodium binaries for every
+# target this app cares about (Windows MSVC, Android, iOS, macOS, Linux) with no local build tools
+# needed at all - unlike SQLCipher's forced OpenSSL-from-source build, this needs no perl, no MSVC
+# project build, nothing: cargo fetches the right prebuilt binary for the target at build time.
+libsodium-rs = "0.2"
+
+# --- Key derivation (mirrors web-client's localIndexKey.ts HKDF-from-master-key approach) -------
+hkdf = "0.12"
+sha2 = "0.10"
+
+# --- Federation lookup (Add account flow: _rapidmx.<domain> TXT record) ------------------------
+# hickory-resolver, not trust-dns-resolver (renamed/rebranded, see .claude/NOTES.md's
+# package-research entry) - `system-config` reads the OS's real resolver configuration
+# (/etc/resolv.conf, the Windows registry) instead of a hardcoded public resolver.
+hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
+
+# --- OAuth2/PKCE (state, code_verifier/code_challenge generation; S256 challenge reuses the sha2
+# dependency above) ------------------------------------------------------------------------------
+rand = "0.8"
+base64 = "0.22"
+
+# --- Misc ----------------------------------------------------------------------------------------
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"

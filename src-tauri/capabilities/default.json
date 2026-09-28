@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to RapidMX's single main window. This app has no other windows and no multi-window isolation needs (every account is scoped in-process, not by window - see .claude/NOTES.md), so one capability set covering every window is sufficient.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "opener:default",
+    "opener:allow-open-url",
+    "deep-link:default",
+    "secure-keystore:default"
+  ]
+}

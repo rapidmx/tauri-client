@@ -1,0 +1,33 @@
+node_modules
+/yarn-error.log
+/dist
+/coverage
+junit.xml
+tmp-*
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+**/.idea
+# Local environment overrides - never commit real secrets.
+.env
+
+# Rust / Tauri build output. src-tauri/Cargo.lock IS committed (this is an application, not a
+# library - see .claude/NOTES.md's Standing decisions), only the compiled target/ directory isn't.
+/src-tauri/target
+
+# Generated only after `tauri android init` / `tauri ios init` are actually run against a real
+# toolchain (see .claude/NOTES.md - neither has been run in this sandbox, so these directories
+# don't exist yet). Left ignored for now; once generated they are ordinarily committed (they hold
+# real native project files a maintainer may hand-edit), so revisit this the first time either
+# init command actually runs rather than blindly keeping the ignore.
+/src-tauri/gen
+
+# Local per-account SQLCipher search index databases, if this app is ever run with a dev
+# --config pointing app-data-dir at a folder inside this repo. The real path is always the OS's
+# actual app-data directory, this is only a safety net.
+*.sqlite3
+*.sqlite3-*
