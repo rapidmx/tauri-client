@@ -8,13 +8,13 @@
 //! `serverUrl`/`authServerUrl` at "Add account" time (see `federation/mod.rs`). What's constant
 //! here is this *client application's* own identity in the OAuth flow, not any one deployment.
 
-/// The registered PUBLIC OAuth2 client id for this native app, as this task's design section
-/// describes step 1 of the sign-in flow. **Not yet actually registered anywhere** - a parallel
-/// effort is expected to register a `tauri-client` PUBLIC client with every `auth-server`
-/// deployment's OAuth client registry (or ship a seed migration doing so); until that lands, every
-/// real `/oauth/authorize` request built from this constant will be rejected by a real
-/// `auth-server` with an "unknown client_id" error. See `.claude/NOTES.md`.
-pub const OAUTH_CLIENT_ID: &str = "tauri-client";
+/// The OAuth2 client id this app sends on every `/auth/authorize`, `/oauth/token` and refresh
+/// request. `auth-server` identifies a client by its record uid (the separate `clientId` field was
+/// removed upstream), and creating a client with an explicit uid keeps that uid - so every customer
+/// deployment registers this one PUBLIC client under this fixed uid, and a single compiled-in id
+/// works against every server. Registration steps are in `README.md`; until a deployment has
+/// registered it, its `/auth/authorize` rejects the request as an unknown client.
+pub const OAUTH_CLIENT_ID: &str = "7f3c2b9e-5a1d-4c8e-9b6f-0d2a1e4c7b53";
 
 /// The custom URL scheme this app registers via the `deep-link` plugin (see `tauri.conf.json`'s
 /// `plugins.deep-link.desktop.schemes` and `.mobile[].scheme`) and the redirect_uri sent to

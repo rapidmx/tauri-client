@@ -7,6 +7,13 @@ import type { ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import type { AccountSummary } from "../../src/lib/tauri.js";
 import { resolveWwwShellProps } from "../../src/lib/shellProps.js";
 
+const { createApiClientMock, getSessionTokenMock } = vi.hoisted(() => ({
+    createApiClientMock: vi.fn(),
+    getSessionTokenMock: vi.fn(),
+}));
+vi.mock("@rapidmx/web-client/lib/util/api.js", () => ({ createApiClient: createApiClientMock }));
+vi.mock("../../src/lib/tauri.js", () => ({ getSessionToken: getSessionTokenMock }));
+
 const account: AccountSummary = {
     id: "a1",
     label: "Work",
@@ -52,5 +59,28 @@ describe("resolveWwwShellProps", () => {
         const props = await resolveWwwShellProps(account, client);
         expect(props.branding).toBeUndefined();
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Work"), expect.any(Error));
+    });
+
+    it("reads the signed-in user uid from auth-server with this account's session token", async () => {
+        const authFetch = vi.fn().mockResolvedValue({ uid: "user-42" });
+        createApiClientMock.mockReturnValue({ fetch: authFetch, setUnauthorizedObserver: vi.fn() });
+        getSessionTokenMock.mockResolvedValue("session-token");
+        const client: ApiClient = { fetch: vi.fn().mockResolvedValue({}), setUnauthorizedObserver: vi.fn() };
+        const props = await resolveWwwShellProps(account, client);
+        expect(createApiClientMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: account.authServerUrl }));
+        expect(authFetch).toHaveBeenCalledWith("/profiles/me");
+        expect(props.userUid).toBe("user-42");
+        const options = createApiClientMock.mock.calls[0][0] as { getAccessToken: () => Promise<string> };
+        await expect(options.getAccessToken()).resolves.toBe("session-token");
+        expect(getSessionTokenMock).toHaveBeenCalledWith("a1");
+    });
+
+    it("leaves the uid undefined, logging a warning, when the profile cannot be read", async () => {
+        createApiClientMock.mockReturnValue({ fetch: vi.fn().mockRejectedValue(new Error("401")), setUnauthorizedObserver: vi.fn() });
+        getSessionTokenMock.mockResolvedValue("session-token");
+        const client: ApiClient = { fetch: vi.fn().mockResolvedValue({}), setUnauthorizedObserver: vi.fn() };
+        const props = await resolveWwwShellProps(account, client);
+        expect(props.userUid).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("signed-in user"), expect.any(Error));
     });
 });

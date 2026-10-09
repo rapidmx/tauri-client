@@ -95,12 +95,16 @@ fn http_client() -> AppResult<reqwest::Client> {
         .map_err(AppError::Http)
 }
 
-/// Step 1: builds `${authServerUrl}/oauth/authorize` with a fresh PKCE pair and `state`, opens it
+/// Step 1: builds `${authServerUrl}/auth/authorize` with a fresh PKCE pair and `state`, opens it
 /// in the system browser via the `opener` plugin, and registers the pending sign-in so the eventual
 /// `rapidmx://auth/callback` deep link (`deep_link.rs`) can find it again by `state`. Returns as
 /// soon as the browser has been asked to open - does NOT wait for the user to finish signing in;
 /// see this module's doc comment and `src/lib/tauri.ts`'s `addAccount()` for how completion is
 /// reported back to the frontend asynchronously.
+///
+/// Targets the `/auth/authorize` page, not the bare `/oauth/authorize` JSON endpoint: the page
+/// shows the sign-in UI and calls `/oauth/authorize` itself, while the bare endpoint answers an
+/// unauthenticated browser with `{loginRequired: true}` JSON and no sign-in screen.
 pub fn begin_sign_in(
     app: &AppHandle,
     pending: &PendingSignIns,
@@ -112,7 +116,7 @@ pub fn begin_sign_in(
     let pkce = pkce::generate();
     let state = pkce::generate_state();
 
-    let mut authorize_url = Url::parse(&format!("{}/oauth/authorize", auth_server_url.trim_end_matches('/')))?;
+    let mut authorize_url = Url::parse(&format!("{}/auth/authorize", auth_server_url.trim_end_matches('/')))?;
     authorize_url
         .query_pairs_mut()
         .append_pair("response_type", "code")

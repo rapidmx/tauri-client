@@ -557,3 +557,53 @@ export"; the property must be explicitly present and `undefined`.
 ### 2026-09-28 - Always wait for CI to go green before releasing
 
 Standing process rule, applies to every rapidmx/rapidrest repo: push pending commits, wait for the GitHub Actions **Build** workflow on that push to report `success` (`https://api.github.com/repos/<org>/<repo>/actions/runs`, or ask JP for the downloaded log archive if API log access needs auth - it 403s without a token), and only then run `npx @rapidrest/cli release ...`. Do not tag/release first and diagnose CI failures afterward. During a 2026-09-28 multi-repo release wave, restapi was released immediately after pushing pending commits without waiting for CI; CI then failed on a real coverage-threshold regression the pending changes introduced (a missing test for `BasePluginRoute.newestSearchResult()`'s catch branch) - not a flake, as an incomplete local-only reproduction first suggested. Because the release commit/tag were already pushed, the fix had to land as a follow-up commit on top of an already-tagged release instead of before it.
+
+### 2026-10-06 - Updated to the current auth-server, web-client and restapi contracts
+
+Reviewed every commit in those three repos since 2026-09-27 against this app's contract. Four things
+were wrong and are fixed here; four more are blockers outside this repo.
+
+**Fixed in this repo**
+- **`client_id` was a name, not a uid.** auth-server removed its separate `clientId` field (auth
+  1c6a03e) and keys clients by record uid. `OAUTH_CLIENT_ID` is now the fixed uid
+  `7f3c2b9e-5a1d-4c8e-9b6f-0d2a1e4c7b53`. A caller-supplied uid is kept on create (`RepoUtils.create`
+  constructs from the input and only strips `_id`), so one fixed uid works on every deployment. The
+  README lists the registration fields.
+- **The browser opened the wrong page.** `/oauth/authorize` is a JSON API. An unauthenticated browser
+  gets `{loginRequired: true}`, not a sign-in screen. The sign-in URL is now `/auth/authorize`, the
+  www page that shows the sign-in UI and calls `/oauth/authorize` itself.
+- **`userUid` was always undefined.** `resolveWwwShellProps` now reads auth-server's
+  `/api/profiles/me` with the account's bearer session token, the same route the web client's
+  `getMyProfile()` reads. Failure degrades to undefined with a warning. Without it the appearance
+  cache has no per-user scope.
+- **The `searchTransport.ts` comments were stale.** The built `web-client` now exports
+  `setLocalIndexTransport` and ships `localIndexTransport.d.ts`, so the native transport is installed
+  for real. The local interface mirror stays: that `.d.ts` exports only three of its types, and the
+  rest come from worker modules the package does not export.
+
+**Blockers outside this repo** (see the README's "Server prerequisites")
+- **`server` does not mount `/.well-known/rapidmx/server-info`.** `restapi` 0.31.0 defines
+  `BaseServerInfoRoute`, and its `ServerInfoRouteMongo`/`ServerInfoRouteSQL` are exported only from
+  the library. `server/src` has no `@Route` for it, so discovery 404s. Fix: a `ServerInfoRoute` in
+  `server/src/{mongo,sql}/routes/`.
+- **CORS blocks the webview by default.** Its origin, `tauri://localhost` or `https://tauri.localhost`,
+  gets no `Access-Control-Allow-Origin` unless `cors.origins` lists it or is `"*"`. The server's
+  default is `["http://localhost:3000"]`. Operators must set this per deployment.
+- **Mail push refuses the webview.** `restapi`'s `MailPushRoute` closes a websocket with 1008 when
+  `Origin` is present and not on the list. The same `cors.origins` fix covers it.
+- **Cookie-only paths in `web-client`.** `fetchBodyContent`, `fetchVCardText`, `fetchContentHtml`,
+  `serverImageResolver` and the `attachmentContentUrl` links still send credentials as cookies, so a
+  native host fails to show message bodies, vCards, quoted pictures and attachment downloads. Raw
+  upload, raw MIME and contact-photo blobs are now routed through `ApiClient`
+  (`withClientRaw`/`withClientBlob`).
+
+**Confirmed unchanged, no action needed:** `/oauth/session-token` (`{token}` only, bearer-only, no
+cookie), PKCE and the exact-match `redirect_uri`, the refresh grant with `offline_access`, token TTLs
+and issuer, bearer `Authorization: jwt` acceptance on ordinary routes, and the route paths the web
+client uses. Elevation gates only admin-scope actions, so a non-admin native user is unaffected.
+Gravatar is now opt-in, which needs nothing from the host. `web-client`'s session-refresh no-op under
+`ApiClientContext` is still in place.
+
+**Verification:** `cargo check` and `cargo test` are clean (29/29). `yarn build` succeeds (its
+lightningcss warnings are pre-existing, from `web-client`'s stylesheet). `vitest` passes 99/99 at
+100% statements, branches, functions and lines.

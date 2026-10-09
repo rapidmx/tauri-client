@@ -22,26 +22,19 @@
  * (`git status` there shows it untracked, alongside a modified `localIndexRpcClient.ts` and a new
  * test file) - part of "a parallel effort landing around the same time as this task", per this
  * task's own briefing.
- * 2. `web-client`'s installable package (what `link:../web-client` actually resolves through its
- * `exports` map, i.e. `dist/apps/**`) has **not been rebuilt since that source landed** -
- * `dist/apps/shared/search/` has no `localIndexTransport.js`/`.d.ts` at all, and the compiled
- * `dist/apps/shared/search/localIndexRpcClient.js` has no `setLocalIndexTransport` export either
- * (confirmed by grepping both files directly). Since `web-client`'s `package.json` declares an
- * `exports` map, Node/TypeScript's module resolution refuses any subpath not listed there - there is
- * no way to import a file `dist/` doesn't have, and this task's hard constraints forbid rebuilding
- * `web-client` (a write outside this repo) to fix that here.
+ * 2. The linked `web-client`'s built `dist/apps/**` (what its `exports` map resolves) now ships
+ * `shared/search/localIndexRpcClient.js` exporting `setLocalIndexTransport`, plus
+ * `localIndexTransport.d.ts`. Only three of this interface's types are exported by that `.d.ts`
+ * (`LocalIndexTransport`, `PruneLocalEntitiesOptions`, `SetLocalIndexBuildingCompletion`); the
+ * parameter and result types below come from `web-client`'s worker and schema modules, which the
+ * package does not export. The mirror is kept for the whole set so there is one consistent source
+ * of truth here; it was checked field-for-field against the source when written and has not changed
+ * since in `web-client`'s search modules.
  *
- * The interface below is a byte-for-byte field mirror of the real
- * `apps/shared/search/localIndexTransport.ts` source as read this session - replace it with a real
- * `import type { LocalIndexTransport, ... } from "@rapidmx/web-client/shared/search/localIndexTransport.js"`
- * the moment `web-client` publishes a build that includes that file (delete this local copy at the
- * same time, don't keep both).
- *
- * **The runtime wiring has the same problem, handled defensively**: `installNativeSearchTransport()`
- * below dynamically imports `localIndexRpcClient.js` and only calls `setLocalIndexTransport` if it
- * actually exists as a function on the imported module - today (against the currently-installable
- * `@rapidmx/web-client`) it does not, so this is a documented, logged no-op until `web-client`'s dist
- * catches up, at which point this starts working with no code change here at all.
+ * **The runtime wiring is real, with a defensive fallback**: `installNativeSearchTransport()` below
+ * dynamically imports `localIndexRpcClient.js` and calls `setLocalIndexTransport` when it is present
+ * as a function. The fallback (a logged warning, not a throw) only runs if a future `web-client`
+ * build drops that export.
  */
 import { searchCommands, type LocalIndexEntity as RustLocalIndexEntity } from "./tauri.js";
 
@@ -303,8 +296,8 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
 /**
  * Installs `createNativeSearchTransport()` as `web-client`'s active `LocalIndexTransport`, once, at
  * startup, before any search UI mounts - see this module's own doc comment for why this is currently
- * a safe, logged no-op rather than a real swap (the installable `@rapidmx/web-client` doesn't export
- * `setLocalIndexTransport` yet). Never throws.
+ * the installed `@rapidmx/web-client` build exports `setLocalIndexTransport`, so this is the real swap.
+ * It stays defensive: a missing export logs a warning rather than throwing. Never throws.
  */
 export async function installNativeSearchTransport(resolveAccountId: (mailboxUid: string) => string | undefined): Promise<void> {
     try {

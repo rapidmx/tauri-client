@@ -14,8 +14,9 @@ version of this repo).
 
 ## How this app works (target design)
 
-1. **Sign-in** opens the system browser to auth-server's real `/oauth/authorize` page (OAuth2 +
-   PKCE, a registered `PUBLIC` client), receives `rapidmx://auth/callback` back via a deep link, and
+1. **Sign-in** opens the system browser to auth-server's `/auth/authorize` sign-in page (OAuth2 +
+   PKCE, a registered `PUBLIC` client - the page calls `/oauth/authorize` itself), receives
+   `rapidmx://auth/callback` back via a deep link, and
    exchanges the code for tokens - entirely in the Rust process via `reqwest`, never through the
    webview, so an OAuth token never enters the webview's JS context at all. See
    `src-tauri/src/oauth/mod.rs`.
@@ -27,14 +28,13 @@ version of this repo).
 3. Each account's refresh token lives only in the OS keychain (Keychain/Credential Manager/Secret
    Service/Android Keystore/iOS Keychain via `tauri-plugin-secure-keystore`), one entry per account -
    never on disk in plain form, never in the webview. See `src-tauri/src/keychain.rs`.
-4. A native Tier 2 full-text search index - one SQLCipher-encrypted `rusqlite` database per account
-   - mirrors `web-client`'s browser-side FTS5 schema natively, with real full-database encryption
-   instead of that implementation's hand-rolled per-page AES-GCM VFS (which only exists there because
-   no SQLCipher WASM build exists). See `src-tauri/src/search/`.
-5. Once wired up (not this session - see below), the actual UI is `@rapidmx/web-client`'s real page
-   components, mounted client-side-rendered per account via a new CSR bootstrap capability being
-   added to `@rapidrest/react` in a parallel effort, each with its own `@rapidmx/react-shared` API
-   client instance carrying that account's own short-lived session token.
+4. A native Tier 2 full-text search index, one per account, mirroring `web-client`'s FTS5 schema
+   natively. The live index is in-memory SQLite; it is persisted as a single blob encrypted with
+   libsodium's XChaCha20-Poly1305, since SQLCipher would need OpenSSL. See `src-tauri/src/search/`.
+5. The UI is `@rapidmx/web-client`'s real page components, mounted client-side per account with
+   `mountRouter()` from `@rapidrest/react`. Each account gets its own `ApiClient` carrying that
+   account's session token, and `web-client`'s `lib/` (the former `@rapidmx/react-shared`, merged
+   in) supplies the API clients.
 
 ## What this session actually built vs. stubbed
 
@@ -53,20 +53,42 @@ version of this repo).
   window boots and can drive the real Rust-side OAuth flow (list accounts already on disk, add a new
   one via a real system-browser sign-in, remove one) - not the real account-switcher UI.
 
-## Known gaps / not yet done by any repo
+## Server prerequisites (every deployment this app signs in to)
 
-- **The `tauri-client` OAuth client id is not actually registered with any real auth-server yet**
-  (`src-tauri/src/config.rs`'s `OAUTH_CLIENT_ID`) - a parallel effort is expected to register it.
-- **auth-server's `POST /oauth/session-token` endpoint is a documented contract, not a confirmed
-  one** - implemented against the task's own `{token: string}` response shape; a parallel effort is
-  adding the actual endpoint.
-- **`restapi`'s `.well-known/rapidmx/server-info` endpoint** is the same situation - implemented
-  against contract `{authServerUrl: string}`.
+Operators must do all of these before the app can sign in to a deployment. None are done by this repo.
+
+1. **Register the OAuth client.** Create one PUBLIC client on the deployment's auth-server with the
+   uid **`7f3c2b9e-5a1d-4c8e-9b6f-0d2a1e4c7b53`** (the value of `OAUTH_CLIENT_ID`). auth-server keys
+   clients by record uid, and a caller-supplied uid is kept, so the same uid works on every
+   deployment. Fields: `clientType: "public"`, `tokenEndpointAuthMethod: "none"`,
+   `requirePkce: true`, `redirectUris: ["rapidmx://auth/callback"]`,
+   `grantTypes: ["authorization_code", "refresh_token"]`, `responseTypes: ["code"]`,
+   `scope: "openid profile email offline_access"` (`offline_access` is required, or no refresh token
+   is issued), and `firstParty: true` so the consent screen is skipped. Creating it needs a trusted
+   administrator.
+2. **Allow the webview's origin in CORS.** The app's API calls come from the Tauri webview, whose
+   origin is `tauri://localhost` (macOS, Linux) or `https://tauri.localhost` (Windows). Without
+   them, the browser blocks every API call. Either add both to the server's `cors.origins` list, or
+   set it to `"*"`. The same list gates the mail push websocket: a request whose `Origin` is not on
+   the list is refused with a 1008 close, so push updates need the list too. (Auth bearer requests
+   send no credentials, so the origins need no credentials flag.)
+3. **Serve the discovery endpoint.** Sign-in and "Add account" fetch
+   `GET /.well-known/rapidmx/server-info` from the server host to learn its auth-server URL. That
+   route is defined in `restapi`, but the `server` repo does not mount it yet, so it currently
+   returns 404. The fix is a `ServerInfoRoute` in `server/src/{mongo,sql}/routes/` with
+   `@Route("/.well-known/rapidmx/server-info")` extending `ServerInfoRouteMongo`/`ServerInfoRouteSQL`
+   from `restapi`.
+
+## Known gaps / not yet done
+
+- **Message bodies, vCard import, quoted pictures and attachment downloads still use cookie-only
+  requests in `web-client`** (`fetchBodyContent`, `fetchVCardText`, `fetchContentHtml`,
+  `serverImageResolver`, and the `attachmentContentUrl` links). A native host fails on these until
+  `web-client` routes them through the host's `ApiClient`. This is the largest remaining gap.
 - **No token revocation on "Remove account"** - auth-server has no documented revoke endpoint yet;
   removing an account here only deletes this app's own local record and keychain entry.
 - **No automatic near-expiry session-token refresh loop** - `oauth::refresh_session_token()` exists
-  and implements the refresh grant, but nothing schedules it yet (there's no long-lived session UI
-  to need it from, in this session's placeholder frontend).
+  and implements the refresh grant, but nothing schedules it yet.
 
 ## Development
 
