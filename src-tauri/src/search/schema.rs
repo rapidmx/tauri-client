@@ -102,11 +102,16 @@ pub const UPSERT_ENTITY_SQL: &str = "
 INSERT INTO entities (entity_type, entity_uid, mailbox_uid, folder_uid, date_for_sort, participants, flags, has_attachments, subject, body, attachment_text, byte_size, entity_version)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
 ON CONFLICT(entity_uid) DO UPDATE SET
-    folder_uid = excluded.folder_uid, date_for_sort = excluded.date_for_sort, participants = excluded.participants,
-    flags = excluded.flags, has_attachments = excluded.has_attachments, subject = excluded.subject,
+    folder_uid = COALESCE(excluded.folder_uid, entities.folder_uid), date_for_sort = excluded.date_for_sort, participants = excluded.participants,
+    flags = CASE WHEN excluded.flags = '' THEN entities.flags ELSE excluded.flags END, has_attachments = excluded.has_attachments, subject = excluded.subject,
     body = excluded.body, attachment_text = excluded.attachment_text, byte_size = excluded.byte_size,
     entity_version = excluded.entity_version
 ";
+
+/// Re-points an indexed message at a new folder in place - mirrors `localIndexWorker.ts`'s
+/// `moveEntity`. `entity_version` is set to the caller's (or cleared when it passes none), so the
+/// next build pass re-validates a row moved without one.
+pub const MOVE_ENTITY_SQL: &str = "UPDATE entities SET folder_uid = ?1, entity_version = ?2 WHERE entity_uid = ?3";
 
 /// One message's decrypted content, ready to index - mirrors `LocalIndexEntity` in
 /// `localIndexSchema.ts` field-for-field (camelCase over IPC/JSON, matching a future frontend's
@@ -225,6 +230,70 @@ pub fn build_match_expression(parsed: &LocalSearchPredicateFields) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entity(uid: &str, folder: Option<&str>, flags: &str, version: &str) -> LocalIndexEntity {
+        LocalIndexEntity {
+            entity_type: "message".to_string(),
+            entity_uid: uid.to_string(),
+            mailbox_uid: "mbx-1".to_string(),
+            folder_uid: folder.map(str::to_string),
+            date_for_sort: "2026-10-23T00:00:00Z".to_string(),
+            participants: "a@example.com".to_string(),
+            flags: flags.to_string(),
+            has_attachments: false,
+            subject: Some("hello".to_string()),
+            body: None,
+            attachment_text: None,
+            byte_size: 5,
+            entity_version: Some(version.to_string()),
+        }
+    }
+
+    fn upsert(conn: &rusqlite::Connection, e: &LocalIndexEntity) {
+        conn.execute(
+            UPSERT_ENTITY_SQL,
+            rusqlite::params![
+                e.entity_type, e.entity_uid, e.mailbox_uid, e.folder_uid, e.date_for_sort, e.participants, e.flags,
+                i64::from(e.has_attachments), e.subject, e.body, e.attachment_text, e.byte_size, e.entity_version,
+            ],
+        )
+        .unwrap();
+    }
+
+    fn row(conn: &rusqlite::Connection, uid: &str) -> (Option<String>, String, Option<String>) {
+        conn.query_row("SELECT folder_uid, flags, entity_version FROM entities WHERE entity_uid = ?1", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+    }
+
+    #[test]
+    fn upsert_keeps_a_known_folder_and_flags_when_the_incoming_row_has_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
+        upsert(&conn, &entity("m1", Some("inbox"), ",read,", "v1"));
+        // An imported segment document knows neither the folder nor the flags.
+        upsert(&conn, &entity("m1", None, "", "v2"));
+        assert_eq!(row(&conn, "m1"), (Some("inbox".to_string()), ",read,".to_string(), Some("v2".to_string())));
+        upsert(&conn, &entity("m1", Some("archive"), ",flagged,", "v3"));
+        assert_eq!(row(&conn, "m1"), (Some("archive".to_string()), ",flagged,".to_string(), Some("v3".to_string())));
+    }
+
+    #[test]
+    fn move_entity_records_the_version_given_or_clears_it() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
+        upsert(&conn, &entity("m1", Some("inbox"), ",read,", "v1"));
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["archive", Some("v2"), "m1"]).unwrap();
+        assert_eq!(row(&conn, "m1").0.as_deref(), Some("archive"));
+        assert_eq!(row(&conn, "m1").2.as_deref(), Some("v2"));
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", None::<String>, "m1"]).unwrap();
+        assert_eq!(row(&conn, "m1").2, None);
+        assert_eq!(super::super::indexed_versions_in(&conn, &["m1".to_string()]).unwrap().len(), 0);
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", Some("v3"), "m1"]).unwrap();
+        let versions = super::super::indexed_versions_in(&conn, &["m1".to_string(), "missing".to_string()]).unwrap();
+        assert_eq!(versions.get("m1").map(String::as_str), Some("v3"));
+        assert_eq!(versions.len(), 1);
+        assert!(super::super::indexed_versions_in(&conn, &[]).unwrap().is_empty());
+    }
 
     #[test]
     fn build_search_predicates_always_scopes_by_mailbox() {

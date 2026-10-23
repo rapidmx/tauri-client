@@ -42,7 +42,7 @@ use tauri::{AppHandle, Manager};
 use crate::error::{AppError, AppResult};
 use schema::{
     build_match_expression, build_search_predicates, LocalIndexEntity, LocalSearchPredicateFields, BM25_WEIGHTS_SQL, CREATE_SCHEMA_SQL,
-    SCHEMA_VERSION, UPSERT_ENTITY_SQL,
+    MOVE_ENTITY_SQL, SCHEMA_VERSION, UPSERT_ENTITY_SQL,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +144,23 @@ fn try_load(plaintext: &[u8]) -> AppResult<Connection> {
     let mut conn = Connection::open_in_memory()?;
     conn.deserialize_read_exact("main", std::io::Cursor::new(plaintext), plaintext.len(), false)?;
     Ok(conn)
+}
+
+/// `entity_version` for whichever of `entity_uids` are indexed, leaving out rows without one - one
+/// batched query, the same as `localIndexWorker.ts`'s `indexedVersions`.
+fn indexed_versions_in(conn: &Connection, entity_uids: &[String]) -> AppResult<HashMap<String, String>> {
+    let mut versions = HashMap::new();
+    if entity_uids.is_empty() {
+        return Ok(versions);
+    }
+    let placeholders = vec!["?"; entity_uids.len()].join(", ");
+    let mut stmt = conn.prepare(&format!("SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN ({placeholders}) AND entity_version IS NOT NULL"))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(entity_uids), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (uid, version) = row?;
+        versions.insert(uid, version);
+    }
+    Ok(versions)
 }
 
 /// Loads `path` (if present and decryptable) into a fresh in-memory connection, or starts an empty
@@ -276,6 +293,21 @@ impl LocalIndexManager {
             conn.execute("DELETE FROM entities WHERE entity_uid = ?1", [entity_uid])?;
             Ok(())
         })
+    }
+
+    /// Re-points an indexed message at a new folder in place (an archive, a move) - mirrors
+    /// `moveLocalEntity()`. A no-op if `entity_uid` isn't present.
+    pub fn move_entity(&self, account_id: &str, entity_uid: &str, folder_uid: &str, entity_version: Option<&str>) -> AppResult<()> {
+        self.with_connection_persisted(account_id, |conn| {
+            conn.execute(MOVE_ENTITY_SQL, rusqlite::params![folder_uid, entity_version, entity_uid])?;
+            Ok(())
+        })
+    }
+
+    /// `entity_version` for whichever of `entity_uids` are already indexed - mirrors
+    /// `getIndexedVersions()`, so a rebuild skips re-fetching and decrypting unchanged messages.
+    pub fn indexed_versions(&self, account_id: &str, entity_uids: &[String]) -> AppResult<HashMap<String, String>> {
+        self.with_connection(account_id, |conn| indexed_versions_in(conn, entity_uids))
     }
 
     /// Mirrors `searchLocal()`: combines `build_search_predicates()`'s structured `WHERE` clause

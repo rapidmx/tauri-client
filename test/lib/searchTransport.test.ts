@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const initMock = vi.fn();
 const indexEntitiesMock = vi.fn();
 const removeEntityMock = vi.fn();
+const moveEntityMock = vi.fn();
+const indexedVersionsMock = vi.fn();
 const searchMock = vi.fn();
 const getCoverageMock = vi.fn();
 const destroyMock = vi.fn();
@@ -17,6 +19,8 @@ vi.mock("../../src/lib/tauri.js", () => ({
         init: (...args: unknown[]) => initMock(...args),
         indexEntities: (...args: unknown[]) => indexEntitiesMock(...args),
         removeEntity: (...args: unknown[]) => removeEntityMock(...args),
+        moveEntity: (...args: unknown[]) => moveEntityMock(...args),
+        indexedVersions: (...args: unknown[]) => indexedVersionsMock(...args),
         search: (...args: unknown[]) => searchMock(...args),
         getCoverage: (...args: unknown[]) => getCoverageMock(...args),
         destroy: (...args: unknown[]) => destroyMock(...args),
@@ -33,6 +37,8 @@ describe("createNativeSearchTransport", () => {
         initMock.mockReset().mockResolvedValue(undefined);
         indexEntitiesMock.mockReset().mockResolvedValue({ indexed: 1 });
         removeEntityMock.mockReset().mockResolvedValue(undefined);
+        moveEntityMock.mockReset().mockResolvedValue(undefined);
+        indexedVersionsMock.mockReset().mockResolvedValue({ e1: "v1" });
         searchMock.mockReset().mockResolvedValue({ hits: [{ entityUid: "e1", rank: 1.5 }] });
         getCoverageMock.mockReset().mockResolvedValue({ entityCount: 3 });
         destroyMock.mockReset().mockResolvedValue(true);
@@ -139,7 +145,15 @@ describe("createNativeSearchTransport", () => {
         await expect(transport.retryPendingDeletions()).resolves.toBeUndefined();
     });
 
-    it.each(["moveEntity", "indexedVersions", "pruneEntities", "setWindow", "setBuilding", "pruneInaccessible"] as const)(
+    it("moveEntity() and indexedVersions() delegate with the resolved account id", async () => {
+        const transport = createNativeSearchTransport(resolver);
+        await transport.moveEntity("mb-1", "e1", "archive", "v2");
+        expect(moveEntityMock).toHaveBeenCalledWith("acct-1", "e1", "archive", "v2");
+        await expect(transport.indexedVersions("mb-1", ["e1", "e2"])).resolves.toEqual({ e1: "v1" });
+        expect(indexedVersionsMock).toHaveBeenCalledWith("acct-1", ["e1", "e2"]);
+    });
+
+    it.each(["pruneEntities", "setWindow", "setBuilding", "pruneInaccessible"] as const)(
         "%s() rejects clearly - no Rust command exists for it yet",
         async (method) => {
             const transport = createNativeSearchTransport(resolver);

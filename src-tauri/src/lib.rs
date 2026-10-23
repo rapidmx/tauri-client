@@ -71,6 +71,8 @@ pub fn run() {
             search::commands::search_local_init,
             search::commands::search_local_index_entities,
             search::commands::search_local_remove_entity,
+            search::commands::search_local_move_entity,
+            search::commands::search_local_indexed_versions,
             search::commands::search_local_search,
             search::commands::search_local_get_coverage,
             search::commands::search_local_destroy,

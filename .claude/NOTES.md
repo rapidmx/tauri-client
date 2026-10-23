@@ -285,9 +285,12 @@ fully absorbed into real code (see below), nothing in this repo imports it anymo
   `LocalIndexTransport` (the *real*, landed interface - see the "Unverified/guessed" list below, item 2,
   for why it's a hand-copied mirror rather than an import) over the existing native Tier 2 Rust commands.
   `nextGeneration()`, `init()`, `indexEntities()`, `removeEntity()`, `search()`, `coverage()`,
-  `destroy()`, `destroyAll()`, `retryPendingDeletions()` are real. `moveEntity()`, `indexedVersions()`,
-  `pruneEntities()`, `setWindow()`, `setBuilding()`, `pruneInaccessible()` reject clearly ("does not
-  implement ... yet") - **no Rust command exists for any of these six yet**; extending
+  `destroy()`, `destroyAll()`, `retryPendingDeletions()`, `moveEntity()` and `indexedVersions()` are real
+  (the last two added 2026-10-23 for zero-access search: a move records the caller's `entityVersion` or
+  clears it, and `UPSERT_ENTITY_SQL` now keeps a known `folder_uid` and `flags` when an imported segment
+  document carries none, matching web-client's `localIndexSchema.ts`). `pruneEntities()`, `setWindow()`,
+  `setBuilding()`, `pruneInaccessible()` reject clearly ("does not implement ... yet") - **no Rust command
+  exists for any of these four yet**; extending
   `search/commands.rs` + `LocalIndexManager` (`search/mod.rs`) with matching methods is real follow-up
   work, not just a TODO comment. `src/lib/mailboxRegistry.ts` (a tiny `mailboxUid -> accountId` map) is
   what lets this adapter satisfy an interface keyed only by `mailboxUid` from a Rust backend keyed by

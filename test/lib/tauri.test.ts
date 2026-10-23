@@ -132,6 +132,22 @@ describe("src/lib/tauri", () => {
             expect(invokeMock).toHaveBeenCalledWith("search_local_remove_entity", { accountId: "a1", entityUid: "e1" });
         });
 
+        it("moveEntity invokes search_local_move_entity, sending no version as null", async () => {
+            const { searchCommands } = await import("../../src/lib/tauri.js");
+            invokeMock.mockResolvedValue(undefined);
+            await searchCommands.moveEntity("a1", "e1", "f1", "v1");
+            expect(invokeMock).toHaveBeenCalledWith("search_local_move_entity", { accountId: "a1", entityUid: "e1", folderUid: "f1", entityVersion: "v1" });
+            await searchCommands.moveEntity("a1", "e1", "f1");
+            expect(invokeMock).toHaveBeenLastCalledWith("search_local_move_entity", { accountId: "a1", entityUid: "e1", folderUid: "f1", entityVersion: null });
+        });
+
+        it("indexedVersions invokes search_local_indexed_versions", async () => {
+            const { searchCommands } = await import("../../src/lib/tauri.js");
+            invokeMock.mockResolvedValueOnce({ e1: "v1" });
+            await expect(searchCommands.indexedVersions("a1", ["e1"])).resolves.toEqual({ e1: "v1" });
+            expect(invokeMock).toHaveBeenCalledWith("search_local_indexed_versions", { accountId: "a1", entityUids: ["e1"] });
+        });
+
         it("search invokes search_local_search, defaulting offset to null when omitted", async () => {
             const { searchCommands } = await import("../../src/lib/tauri.js");
             invokeMock.mockResolvedValueOnce({ hits: [] });

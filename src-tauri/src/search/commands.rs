@@ -15,6 +15,8 @@
 //! and depends on this app first having somewhere to get a mailbox's unlocked master key from (see
 //! `search_local_init`'s own doc comment).
 
+use std::collections::HashMap;
+
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use tauri::{AppHandle, State};
@@ -45,6 +47,24 @@ pub fn search_local_index_entities(manager: State<'_, LocalIndexManager>, accoun
 #[tauri::command]
 pub fn search_local_remove_entity(manager: State<'_, LocalIndexManager>, account_id: String, entity_uid: String) -> CommandResult<()> {
     manager.remove_entity(&account_id, &entity_uid).map_err(|err| err.to_string())
+}
+
+/// Mirrors `moveLocalEntity()`.
+#[tauri::command]
+pub fn search_local_move_entity(
+    manager: State<'_, LocalIndexManager>,
+    account_id: String,
+    entity_uid: String,
+    folder_uid: String,
+    entity_version: Option<String>,
+) -> CommandResult<()> {
+    manager.move_entity(&account_id, &entity_uid, &folder_uid, entity_version.as_deref()).map_err(|err| err.to_string())
+}
+
+/// Mirrors `getIndexedVersions()`.
+#[tauri::command]
+pub fn search_local_indexed_versions(manager: State<'_, LocalIndexManager>, account_id: String, entity_uids: Vec<String>) -> CommandResult<HashMap<String, String>> {
+    manager.indexed_versions(&account_id, &entity_uids).map_err(|err| err.to_string())
 }
 
 /// Mirrors `searchLocal()`. `offset` defaults to 0 when omitted, matching that function's own
