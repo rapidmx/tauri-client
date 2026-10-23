@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@rapidmx/web-client": "link:../web-client",
-    "@rapidrest/react": "link:../../rapidrest/react",
+    "@rapidrest/react": "^2.2.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-deep-link": "^2.4.0",
     "@tauri-apps/plugin-opener": "^2.5.3",

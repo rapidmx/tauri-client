@@ -390,11 +390,34 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@rapidrest/react@link:../../rapidrest/react::locator=tauri-client%40workspace%3A.":
-  version: 0.0.0-use.local
-  resolution: "@rapidrest/react@link:../../rapidrest/react::locator=tauri-client%40workspace%3A."
+"@rapidrest/react@npm:^2.2.0":
+  version: 2.2.0
+  resolution: "@rapidrest/react@npm:2.2.0"
+  dependencies:
+    cross-spawn: "npm:^7.0.6"
+  peerDependencies:
+    "@rapidrest/core": 5.x
+    "@rapidrest/service-core": 1.x
+    "@vitejs/plugin-react": ">=4.0.0"
+    nodemon: ">=3.0.0"
+    react: 19.x
+    react-dom: 19.x
+    tsx: ">=4.0.0"
+    vite: ">=5.0.0"
+  peerDependenciesMeta:
+    "@vitejs/plugin-react":
+      optional: true
+    nodemon:
+      optional: true
+    tsx:
+      optional: true
+    vite:
+      optional: true
+  bin:
+    rapidreact: dist/cli/cli.js
+  checksum: 10c0/961784c0ff84513ed64a33089794cd53d6c60b855c128c0ecf0f04cf019dff9db02ccf50fcb99d77e15d61d35ff4035ccf2e28a59b5974efed3ff6808f306376
   languageName: node
-  linkType: soft
+  linkType: hard
 
 "@rolldown/binding-android-arm-eabi@npm:1.2.11":
   version: 1.2.11
@@ -3663,7 +3686,7 @@ __metadata:
   resolution: "tauri-client@workspace:."
   dependencies:
     "@rapidmx/web-client": "link:../web-client"
-    "@rapidrest/react": "link:../../rapidrest/react"
+    "@rapidrest/react": "npm:^2.2.0"
     "@tauri-apps/api": "npm:^2.11.1"
     "@tauri-apps/cli": "npm:^2.11.5"
     "@tauri-apps/plugin-deep-link": "npm:^2.4.0"

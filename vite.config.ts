@@ -23,12 +23,25 @@ export default defineConfig({
     clearScreen: false,
     envPrefix: ["VITE_", "TAURI_"],
     resolve: {
-        // Forces every import of react/react-dom (this app's own, and `@rapidmx/web-client`'s and
-        // `@rapidmx/react-shared`'s, both `link:`ed sibling packages with their own `node_modules`)
-        // onto one physical copy - without this, hooks called from the mounted `apps/www` pages can
-        // fail with "Invalid hook call" against a second React instance. Same reasoning, same fix, as
-        // `@rapidmx/electron-client`'s own `vite.config.ts`.
-        dedupe: ["react", "react-dom"],
+        // Forces every import of react/react-dom (this app's own, and `@rapidmx/web-client`'s - a
+        // `link:`ed sibling package with its own `node_modules`) onto one physical copy - without
+        // this, hooks called from the mounted `apps/www` pages can fail with "Invalid hook call"
+        // against a second React instance. Same reasoning, same fix, as `@rapidmx/electron-client`'s
+        // own `vite.config.ts`.
+        //
+        // `@rapidrest/react` needs the same treatment for a different symptom: `web-client` is its
+        // own separate yarn project and has never been told to use this repo's `link:`ed sibling
+        // checkout for it, so `web-client/node_modules/@rapidrest/react` is whatever was last
+        // actually published there (today: 2.1.0, which predates `mountRouter()`). `web-client`'s
+        // `apps/www` page modules import `@rapidrest/react/client` themselves (for `Link`,
+        // `useRouter`, ...), so without deduping, Vite's dependency optimizer can collapse every
+        // import of that specifier - this app's own `App.tsx` included - onto whichever physical
+        // copy it scans first, which may be `web-client`'s stale one: the exact failure this was
+        // debugged from (`mountRouter` missing from the optimized chunk, a blank window, confirmed
+        // against a real `yarn dev` run - see `.claude/NOTES.md`). Deduping forces every resolution
+        // back to this project's own root copy (the current, linked sibling checkout) regardless of
+        // which package's source did the importing.
+        dedupe: ["react", "react-dom", "@rapidrest/react"],
     },
     server: {
         port: 1420,

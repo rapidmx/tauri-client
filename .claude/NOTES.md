@@ -607,3 +607,62 @@ Gravatar is now opt-in, which needs nothing from the host. `web-client`'s sessio
 **Verification:** `cargo check` and `cargo test` are clean (29/29). `yarn build` succeeds (its
 lightningcss warnings are pre-existing, from `web-client`'s stylesheet). `vitest` passes 99/99 at
 100% statements, branches, functions and lines.
+
+### 2026-10-22 - Blank white window on first real run: two separate causes
+
+Not committed except the `vite.config.ts` fix below. JP's first `yarn dev` showed a blank window with
+no visible error - both causes together, debugged with a real `cargo tauri dev` run (background,
+stdout captured to a file) rather than guessing from source, since the real failure was in the
+webview's own module loading, not in anything the test suite or `yarn build` exercises.
+
+1. **`package.json` had been hand-edited (uncommitted) to swap `@rapidmx/web-client`/`@rapidrest/react`
+   from this repo's `link:` sibling paths to their published npm versions** - the right end state for
+   real distribution, but it surfaced that **`@rapidrest/react`'s published `2.1.0` doesn't actually
+   have `mountRouter()`**. It was built and merged into that repo's `main` (`2224430`) three commits
+   ago, including real tests and docs, but never version-bumped and published - `npm view
+   @rapidrest/react dist-tags` still showed `latest: 2.1.0` (confirmed directly against the registry,
+   not assumed from the changelog). A commit that reads like a publish
+   (`4d81b85 "Publish a prerelease version to npm..."`) only fixed the GitHub Actions workflow so it
+   *can* publish a prerelease (npm requires a non-`latest` dist-tag for prerelease semver) - it changed
+   `.github/workflows/publish.yml` only, nothing else. Reverted `package.json`/`yarn.lock` back to
+   `link:` for local dev to unblock this immediately. **JP then actually published it** -
+   `@rapidrest/react@2.2.0` appeared on the registry (`npm view @rapidrest/react dist-tags` now shows
+   `latest: 2.2.0`) a few minutes into this same debugging session, and `package.json` went back to
+   `"@rapidrest/react": "^2.2.0"` (JP's own edit, found already on disk - not mine). Confirmed clean
+   with the real published version too: `yarn install`, `yarn build`, `vitest` (99/99) and a real
+   `yarn dev` run all pass against it, the same as against `link:`.
+2. **Reverting to `link:` wasn't enough by itself.** `@rapidmx/web-client` is its own separate yarn
+   project with its own `node_modules/@rapidrest/react` - a real installed copy at the stale published
+   `2.1.0`, never told to use this repo's linked sibling checkout. `web-client`'s own `apps/www` page
+   modules (the ones this app mounts) import `@rapidrest/react/client` themselves (`Link`, `useRouter`,
+   ...), so without deduping, Vite's dependency optimizer collapsed every import of that specifier -
+   this app's own `App.tsx` included - onto whichever physical copy it scanned first, which was
+   `web-client`'s stale one. The real symptom, from a captured `cargo tauri dev` run's stdout (Vite
+   forwards an uncaught browser-side error to the terminal even with no devtools open):
+   ```
+   [vite] (client) [Unhandled error] SyntaxError: The requested module
+   '/node_modules/.vite/deps/@rapidrest_react_client.js?v=...' does not provide an export named
+   'mountRouter'
+   ```
+   A fatal ESM `SyntaxError` at module-load time halts the whole script before `main.tsx` ever calls
+   `createRoot()` - that's why the window was *totally* blank, not even `App`'s always-rendered static
+   sidebar (which doesn't depend on `mountRouter` succeeding - that call is inside a `useEffect`).
+   Clearing `node_modules/.vite` alone did not fix it (it re-optimized to a new hash, same stale
+   content) - the actual fix was adding `"@rapidrest/react"` to `vite.config.ts`'s existing
+   `resolve.dedupe` array, next to the `react`/`react-dom` entries already there for the identical
+   class of problem. Against the `link:` dependency, deduping makes `@rapidrest/react` drop out of
+   Vite's optimized-deps list entirely (confirmed via `node_modules/.vite/deps/_metadata.json`) -
+   deduped, it resolves to project source outside `node_modules`, so Vite stops treating it as an
+   opaque dependency to pre-bundle at all. Against the real published `^2.2.0` (a real `node_modules`
+   install, not a symlink), deduping instead keeps it *in* the optimized-deps list as normal, just
+   pinned to this project's one root copy - confirmed its pre-bundled chunk actually contains
+   `mountRouter` this time. Either way the dedupe entry is what matters: **`web-client`'s own
+   `node_modules/@rapidrest/react` was still at the stale `2.1.0` as of this writing** (its own
+   dependency range, `>=2.1.0 <3`, already allows `2.2.0` - it just hasn't had `yarn install` rerun
+   there since the publish) - so the stale-second-copy hazard this dedupe guards against is still live
+   today, not just a `link:`-only concern, until `web-client` updates its own lockfile too.
+3. **No GUI automation available in this sandbox** to open devtools or screenshot the real window
+   directly (tried; a screen-capture attempt via PowerShell just captured the host desktop's other
+   windows, not the webview - this environment has no working desktop/window control). The real fix
+   was confirmed by running `yarn dev` for real in the background with stdout captured to a file (the
+   only way the actual browser-side error surfaced at all), and JP confirmed visually afterward.
