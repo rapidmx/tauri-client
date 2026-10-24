@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installRapidMxShim, setActiveAccountConfig } from "../../src/lib/rapidmxShim.js";
 
 describe("rapidmxShim", () => {
@@ -15,6 +15,18 @@ describe("rapidmxShim", () => {
         installRapidMxShim();
         expect(window.rapidmx).toBeDefined();
         expect(typeof window.rapidmx?.getConfig).toBe("function");
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("reports a desktop form factor on a computer and mobile in a phone or tablet web view", () => {
+        installRapidMxShim();
+        expect(window.rapidmx?.formFactor).toBe("desktop");
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 wry");
+        installRapidMxShim();
+        expect(window.rapidmx?.formFactor).toBe("mobile");
     });
 
     it("rejects getConfig() when no account is active yet", async () => {

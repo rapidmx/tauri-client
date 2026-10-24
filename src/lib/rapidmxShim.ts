@@ -41,6 +41,9 @@ declare global {
          * `@rapidmx/web-client`/`@rapidmx/react-shared`'s desktop-client duck-typing. */
         rapidmx?: {
             getConfig: () => Promise<RapidMxConfig>;
+            /** Whether this app runs on a computer or a phone/tablet - `@rapidmx/web-client`'s `clientPlatform()` leaves work
+             * such as search index compaction to computers (restapi `specs/search.md` §8 *Who compacts*). */
+            formFactor: "desktop" | "mobile";
         };
     }
 }
@@ -70,6 +73,8 @@ export function installRapidMxShim(): void {
         return;
     }
     window.rapidmx = {
+        // Tauri v2's iOS and Android builds run this same frontend in the platform's web view.
+        formFactor: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop",
         getConfig: () =>
             activeConfig
                 ? Promise.resolve(activeConfig)
