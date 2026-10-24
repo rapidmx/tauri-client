@@ -669,3 +669,9 @@ webview's own module loading, not in anything the test suite or `yarn build` exe
    windows, not the webview - this environment has no working desktop/window control). The real fix
    was confirmed by running `yarn dev` for real in the background with stdout captured to a file (the
    only way the actual browser-side error surfaced at all), and JP confirmed visually afterward.
+
+## 2026-10-23 - @rapidmx/web-client from npm
+
+- **`@rapidmx/web-client` is `^0.36.0` from npm, not `link:../web-client`** (the `link:` described in the earlier entries is gone; `@rapidrest/react` moved the same way in e01c02d).
+- **Tailwind is now this app's own build dependency.** web-client's stylesheet (`apps/shared/styles`) starts with `@import "tailwindcss"`; through the `link:` that resolved from web-client's own `node_modules`, from the npm package it doesn't. `tailwindcss` and `@tailwindcss/vite` (`^4.3.3`, web-client's versions) are devDependencies, and `vite.config.ts` adds `tailwindcss()` as the server's `serverViteConfig.ts` does. web-client's CSS names its own `@source` paths, so the utility classes it uses are generated from `node_modules` too.
+- Picking up a new web-client release is now a normal dependency bump (`yarn up @rapidmx/web-client`); local web-client changes reach this app only once released, or through a temporary `link:`.

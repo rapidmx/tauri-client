@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 /**
  * Standard Tauri v2 + Vite setup (see https://v2.tauri.app/start/frontend/vite/). A few things
@@ -13,13 +14,15 @@ import react from "@vitejs/plugin-react";
  * - `server.host`/`server.hmr` honor `TAURI_DEV_HOST`, which the Tauri CLI sets when running
  *   against a real mobile device/simulator (iOS/Android) rather than the desktop webview - the dev
  *   server otherwise only binds to localhost, unreachable from a physical device on the network.
+ * - `tailwindcss()` - `@rapidmx/web-client`'s own stylesheet (`apps/shared/styles`) is Tailwind v4 and names its own
+ *   `@source` paths, so it builds here exactly as in the server (`serverViteConfig.ts`).
  * - `envPrefix: ["VITE_", "TAURI_"]` exposes `TAURI_*` env vars (platform/family/arch, set by the
  *   Tauri CLI at build time) to `import.meta.env`, in addition to Vite's own default `VITE_` prefix.
  */
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     clearScreen: false,
     envPrefix: ["VITE_", "TAURI_"],
     resolve: {
