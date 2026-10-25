@@ -16,6 +16,11 @@
 //! bare strings - so the refresh token, which step 4/5's token exchange deliberately keeps out of
 //! the webview's JS context entirely (see `oauth/mod.rs`'s own doc comment), never has to
 //! round-trip through JS just to be stored, exactly as hoped.
+//!
+//! The plugin is deliberately granted no capability (`capabilities/default.json`): its commands
+//! would let any script in the webview read, overwrite or delete these entries by their
+//! predictable keys. This module's Rust calls go through `SecureKeystoreExt` directly, never
+//! through IPC, so they need none.
 
 use tauri::AppHandle;
 use tauri_plugin_secure_keystore::{GetItemResponse, ItemKey, SecureKeystoreExt, SetItemRequest};

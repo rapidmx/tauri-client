@@ -31,8 +31,7 @@
     "@tauri-apps/plugin-deep-link": "^2.4.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "tauri-plugin-secure-keystore": "^0.0.3-beta.1"
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
