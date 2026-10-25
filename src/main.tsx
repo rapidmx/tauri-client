@@ -17,9 +17,9 @@ import "./styles.css";
 // comment for the exact shape and why.
 installRapidMxShim();
 
-// Same "before any search UI mounts" requirement for the native local-search transport - see
-// `src/lib/searchTransport.ts`'s own doc comment for why this is currently a safe, logged no-op
-// (the installable `@rapidmx/web-client` doesn't export `setLocalIndexTransport()` yet).
+// Same "before any search UI mounts" requirement for the native local-search transport. It does
+// nothing until `NATIVE_SEARCH_TRANSPORT_READY` (`src/lib/searchTransport.ts`) is switched on, so
+// web-client's own Worker/OPFS transport stays in use until the native one is complete.
 void installNativeSearchTransport(resolveMailboxAccount);
 
 const container = document.getElementById("root");

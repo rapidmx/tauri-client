@@ -184,6 +184,14 @@ describe("src/lib/tauri", () => {
             expect(result).toBe(true);
         });
 
+        it("destroyMailbox invokes search_local_destroy_mailbox", async () => {
+            const { searchCommands } = await import("../../src/lib/tauri.js");
+            invokeMock.mockResolvedValueOnce(true);
+            const result = await searchCommands.destroyMailbox("a1", "mb-1");
+            expect(invokeMock).toHaveBeenCalledWith("search_local_destroy_mailbox", { accountId: "a1", mailboxUid: "mb-1" });
+            expect(result).toBe(true);
+        });
+
         it("destroyAll invokes search_local_destroy_all", async () => {
             const { searchCommands } = await import("../../src/lib/tauri.js");
             invokeMock.mockResolvedValueOnce(true);

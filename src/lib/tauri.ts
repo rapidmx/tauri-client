@@ -99,11 +99,11 @@ export function onSignInError(handler: (payload: SignInErrorPayload) => void): P
 }
 
 /**
- * Calls the `get_session_token` command - a fresh session JWT for `accountId`, transparently doing
- * a real OAuth refresh-token grant plus the `/oauth/session-token` exchange server-side
- * (`oauth::refresh_session_token`). This is exactly the `getAccessToken` callback every account's
- * `@rapidmx/react-shared` `ApiClient` needs (see `src/lib/apiClients.ts`) - that library calls it
- * fresh before every single request, so this never caches anything on the JS side either.
+ * Calls the `get_session_token` command - a valid session JWT for `accountId`. The Rust side caches
+ * it per account until shortly before it expires and serializes refreshes per account
+ * (`oauth::session`), so concurrent requests never redeem the same rotating refresh token twice.
+ * This is exactly the `getAccessToken` callback every account's `ApiClient` needs (see
+ * `src/lib/apiClients.ts`), which calls it before every request; nothing is cached on the JS side.
  */
 export function getSessionToken(accountId: string): Promise<string> {
     return invoke<string>("get_session_token", { accountId });
@@ -198,8 +198,13 @@ export const searchCommands = {
     getCoverage(accountId: string, mailboxUid: string): Promise<LocalIndexCoverage> {
         return invoke<LocalIndexCoverage>("search_local_get_coverage", { accountId, mailboxUid });
     },
+    /** Deletes the account's whole index file - every mailbox of that account. */
     destroy(accountId: string): Promise<boolean> {
         return invoke<boolean>("search_local_destroy", { accountId });
+    },
+    /** Drops one mailbox's rows from its account's index, leaving the account's other mailboxes. */
+    destroyMailbox(accountId: string, mailboxUid: string): Promise<boolean> {
+        return invoke<boolean>("search_local_destroy_mailbox", { accountId, mailboxUid });
     },
     destroyAll(): Promise<boolean> {
         return invoke<boolean>("search_local_destroy_all", {});

@@ -92,11 +92,23 @@ fn search_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(dir)
 }
 
-fn db_path(app: &AppHandle, account_id: &str) -> AppResult<PathBuf> {
+/// The index file name for `account_id`. The id arrives over IPC from the webview, so anything but
+/// `[A-Za-z0-9_-]` (an account id is a UUID) is refused before it reaches a path: `../` segments or
+/// an absolute path would otherwise let a caller write and delete `.rmxidx` files outside the
+/// search directory.
+fn index_file_name(account_id: &str) -> AppResult<String> {
+    if account_id.is_empty() || !account_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(AppError::Other("invalid account id".to_string()));
+    }
     // `.rmxidx` (not `.sqlite3`) - deliberately not a valid SQLite file at all, just this app's own
     // opaque `nonce || ciphertext` container (see `persist()`), so nothing (an OS file-type
     // handler, a stray `sqlite3` CLI invocation) ever mistakes it for an openable database.
-    Ok(search_dir(app)?.join(format!("{account_id}.rmxidx")))
+    Ok(format!("{account_id}.rmxidx"))
+}
+
+fn db_path(app: &AppHandle, account_id: &str) -> AppResult<PathBuf> {
+    let file_name = index_file_name(account_id)?;
+    Ok(search_dir(app)?.join(file_name))
 }
 
 fn to_sodium_key(key: &[u8; key::LOCAL_INDEX_KEY_LEN]) -> AppResult<Key> {
@@ -361,6 +373,24 @@ impl LocalIndexManager {
         })
     }
 
+    /// Deletes one mailbox's rows from its account's open index and persists it - what web-client's
+    /// per-mailbox `destroyLocalIndex()` means here, since one account file holds every mailbox of
+    /// that account (deleting the whole file would wipe the account's other mailboxes too). Returns
+    /// `false` when the account's index isn't open this session: the file can't be edited without
+    /// its key, so the rows stay until a later call finds it open.
+    pub fn destroy_mailbox(&self, account_id: &str, mailbox_uid: &str) -> AppResult<bool> {
+        {
+            let guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !guard.contains_key(account_id) {
+                return Ok(false);
+            }
+        }
+        self.with_connection_persisted(account_id, |conn| {
+            conn.execute("DELETE FROM entities WHERE mailbox_uid = ?1", [mailbox_uid])?;
+            Ok(true)
+        })
+    }
+
     /// Closes (if open) and deletes one account's index file - mirrors `destroyLocalIndex()`.
     /// Returns `true` if the file was removed (or never existed), `false` if deletion failed (e.g.
     /// held open elsewhere) - the same "retry on next load" contract `localIndexRpcClient.ts`
@@ -400,5 +430,73 @@ impl LocalIndexManager {
             }
         }
         Ok(all_removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schema::LocalIndexEntity;
+
+    #[test]
+    fn index_file_name_refuses_an_account_id_that_could_leave_the_search_directory() {
+        assert_eq!(index_file_name("7f3c2b9e-5a1d-4c8e-9b6f-0d2a1e4c7b53").unwrap(), "7f3c2b9e-5a1d-4c8e-9b6f-0d2a1e4c7b53.rmxidx");
+        assert!(index_file_name("acct_1").is_ok());
+        for bad in ["", "../x", "..", "C:/x", "C:\\x", "/x", "a/b", "a\\b", "a.b", "a b", "a\0b"] {
+            assert!(index_file_name(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
+
+    fn entity(uid: &str, mailbox_uid: &str) -> LocalIndexEntity {
+        LocalIndexEntity {
+            entity_type: "message".to_string(),
+            entity_uid: uid.to_string(),
+            mailbox_uid: mailbox_uid.to_string(),
+            folder_uid: Some("inbox".to_string()),
+            date_for_sort: "2026-10-24T00:00:00Z".to_string(),
+            participants: "a@example.com".to_string(),
+            flags: String::new(),
+            has_attachments: false,
+            subject: Some("hello".to_string()),
+            body: None,
+            attachment_text: None,
+            byte_size: 5,
+            entity_version: None,
+        }
+    }
+
+    fn count_in(manager: &LocalIndexManager, mailbox_uid: &str) -> i64 {
+        manager.with_connection("acct", |conn| Ok(conn.query_row("SELECT count(*) FROM entities WHERE mailbox_uid = ?1", [mailbox_uid], |row| row.get(0))?)).unwrap()
+    }
+
+    #[test]
+    fn destroy_mailbox_removes_only_that_mailboxs_rows_and_persists() {
+        let dir = std::env::temp_dir().join(format!("rmx-search-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acct.rmxidx");
+        let key = [7u8; key::LOCAL_INDEX_KEY_LEN];
+        let manager = LocalIndexManager::default();
+
+        assert!(!manager.destroy_mailbox("acct", "mbx-own").unwrap(), "not open: nothing can be removed");
+
+        let conn = open_or_rebuild(&path, &key).unwrap();
+        manager.0.lock().unwrap().insert("acct".to_string(), OpenIndex { conn, key, path: path.clone() });
+        manager.index_entities("acct", &[entity("m1", "mbx-own"), entity("m2", "mbx-delegated"), entity("m3", "mbx-delegated")]).unwrap();
+
+        assert!(manager.destroy_mailbox("acct", "mbx-delegated").unwrap());
+        assert_eq!(count_in(&manager, "mbx-delegated"), 0);
+        assert_eq!(count_in(&manager, "mbx-own"), 1);
+
+        // Persisted: the file reloads with the own mailbox's row and without the delegated ones.
+        let reloaded = open_or_rebuild(&path, &key).unwrap();
+        let rows: Vec<String> = reloaded
+            .prepare("SELECT entity_uid FROM entities ORDER BY entity_uid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec!["m1".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

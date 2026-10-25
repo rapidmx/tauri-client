@@ -25,6 +25,7 @@
 //! contract as documented", not "confirmed by an actual successful exchange".
 
 pub mod pkce;
+pub mod session;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -89,6 +90,25 @@ struct SessionTokenResponse {
     token: String,
 }
 
+/// Parses `value` as the base URL of a server this app signs in to, refusing anything but `https`
+/// with a host and no query, fragment or userinfo. The URL comes from the webview (`add_account`) or
+/// from a server's `server-info` answer, and it is both opened in the system browser - `opener`'s
+/// Rust API skips the capability scope the JS one checks, so a `file:` or custom-scheme URL would
+/// reach the OS handler - and sent the authorization code, PKCE verifier and refresh tokens, which
+/// plain `http` would expose. Plain `http` to a loopback host is allowed in a debug build only, for
+/// local development.
+pub fn require_https_base_url(value: &str) -> AppResult<Url> {
+    let refused = || AppError::OAuth(format!("{value:?} is not an https server URL"));
+    let url = Url::parse(value.trim_end_matches('/')).map_err(|_| refused())?;
+    let host = url.host_str().unwrap_or_default();
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    let scheme_ok = url.scheme() == "https" || (cfg!(debug_assertions) && loopback && url.scheme() == "http");
+    if !scheme_ok || host.is_empty() || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return Err(refused());
+    }
+    Ok(url)
+}
+
 fn http_client() -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
         .build()
@@ -113,6 +133,8 @@ pub fn begin_sign_in(
     auth_server_url: String,
     label: Option<String>,
 ) -> AppResult<()> {
+    require_https_base_url(&server_url)?;
+    require_https_base_url(&auth_server_url)?;
     let pkce = pkce::generate();
     let state = pkce::generate_state();
 
@@ -197,16 +219,13 @@ async fn exchange_code_for_session(
 /// Steps 4-5, repeated with a stored refresh token instead of an authorization code - "refresh by
 /// repeating steps 4-5 near expiry using the stored refresh token (no browser popup needed)".
 ///
-/// **Now wired**, as the `get_session_token` command (`commands.rs`), which the frontend's
-/// `getAccessToken` callback on every account's `ApiClient` (`src/lib/apiClients.ts`) calls before
-/// every request that needs a fresh token (`@rapidmx/react-shared`'s `createApiClient()` calls
-/// `getAccessToken` fresh before every single call, never caching it - see that function's own doc
-/// comment) - so this always does a real refresh-token grant, never a cached/reused access token.
-/// That is more network round-trips than a real client would want (a session JWT presumably has its
-/// own lifetime worth caching against, but `POST /oauth/session-token`'s response doesn't document
-/// one - see this module's own doc comment on what is and isn't confirmed), but it is correct and
-/// simple, and a good first pass; caching with a lifetime is future work once that response's real
-/// shape is confirmed.
+/// Called by the `get_session_token` command (`commands.rs`) through `session::SessionTokens`, which
+/// serializes refreshes per account and reuses the resulting session JWT until shortly before its
+/// `exp`: the frontend's `getAccessToken` callback (`src/lib/apiClients.ts`) runs before every
+/// request, and auth-server rotates the refresh token on every redemption and revokes the whole
+/// family when a rotated one is presented again, so two overlapping calls here would sign the account
+/// out. The rotated refresh token is stored before the session-token exchange, so a failure there
+/// still leaves the current one in the keychain.
 pub async fn refresh_session_token(app: &AppHandle, account_id: &str) -> AppResult<String> {
     let account = account_store::find(app, account_id)?.ok_or_else(|| AppError::AccountNotFound(account_id.to_string()))?;
     let refresh_token = keychain::load_refresh_token(app, account_id)?
@@ -318,6 +337,30 @@ mod tests {
 
     fn callback_url(query: &str) -> Url {
         Url::parse(&format!("rapidmx://auth/callback?{query}")).unwrap()
+    }
+
+    #[test]
+    fn require_https_base_url_accepts_only_https_server_urls() {
+        assert_eq!(require_https_base_url("https://auth.example.com/").unwrap().as_str(), "https://auth.example.com/");
+        assert!(require_https_base_url("https://example.com/auth").is_ok());
+        for bad in [
+            "http://auth.example.com",
+            "file:///C:/Windows/System32/cmd.exe#",
+            "file://host/share/x.exe#",
+            "rapidmx://auth",
+            "javascript:alert(1)",
+            "https://auth.example.com/?next=x",
+            "https://auth.example.com/#frag",
+            "https://user@auth.example.com",
+            "https://user:pw@auth.example.com",
+            "not a url",
+            "",
+        ] {
+            assert!(require_https_base_url(bad).is_err(), "{bad} should be refused");
+        }
+        // Local development only.
+        assert_eq!(require_https_base_url("http://localhost:3000").is_ok(), cfg!(debug_assertions));
+        assert!(require_https_base_url("http://127.0.0.1.example.com").is_err());
     }
 
     #[test]

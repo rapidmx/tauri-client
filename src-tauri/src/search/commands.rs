@@ -89,10 +89,18 @@ pub fn search_local_get_coverage(manager: State<'_, LocalIndexManager>, account_
     manager.get_coverage(&account_id, &mailbox_uid).map_err(|err| err.to_string())
 }
 
-/// Mirrors `destroyLocalIndex()`.
+/// Deletes one account's whole index file (every mailbox of that account) - for account removal;
+/// a single mailbox goes through `search_local_destroy_mailbox` instead.
 #[tauri::command]
 pub fn search_local_destroy(app: AppHandle, manager: State<'_, LocalIndexManager>, account_id: String) -> CommandResult<bool> {
     manager.destroy(&app, &account_id).map_err(|err| err.to_string())
+}
+
+/// Mirrors web-client's per-mailbox `destroyLocalIndex()`: drops one mailbox's rows from its
+/// account's index, leaving the account's other mailboxes indexed (`LocalIndexManager::destroy_mailbox`).
+#[tauri::command]
+pub fn search_local_destroy_mailbox(manager: State<'_, LocalIndexManager>, account_id: String, mailbox_uid: String) -> CommandResult<bool> {
+    manager.destroy_mailbox(&account_id, &mailbox_uid).map_err(|err| err.to_string())
 }
 
 /// Mirrors `destroyAllLocalIndexes()` - every account's index, not just one.

@@ -19,10 +19,10 @@
  * this module's caller should stop calling `syncApiClients()` with locked accounts, not this module
  * itself change - it has no way to know "locked" means anything different from "not yet".
  *
- * `getAccessToken` calls the `get_session_token` Tauri command (`src/lib/tauri.ts`), which does a
- * real OAuth refresh grant plus the `/oauth/session-token` exchange in Rust, transparently, on every
- * single call - `createApiClient()` itself calls `getAccessToken` fresh before every request rather
- * than caching it, so this module doesn't need its own caching/refresh-scheduling logic either.
+ * `getAccessToken` calls the `get_session_token` Tauri command (`src/lib/tauri.ts`) before every
+ * request (`createApiClient()` doesn't cache it). The Rust side caches the session JWT per account and
+ * serializes refreshes (`oauth::session`), so this module needs no caching or refresh scheduling of
+ * its own.
  */
 import { createApiClient, type ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import { getSessionToken, type AccountSummary } from "./tauri.js";

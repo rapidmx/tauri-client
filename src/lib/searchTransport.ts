@@ -34,7 +34,8 @@
  * **The runtime wiring is real, with a defensive fallback**: `installNativeSearchTransport()` below
  * dynamically imports `localIndexRpcClient.js` and calls `setLocalIndexTransport` when it is present
  * as a function. The fallback (a logged warning, not a throw) only runs if a future `web-client`
- * build drops that export.
+ * build drops that export. **It is switched off** (`NATIVE_SEARCH_TRANSPORT_READY`) until this
+ * transport can complete a build pass, so web-client's own Worker/OPFS transport stays installed.
  */
 import { searchCommands, type LocalIndexEntity as RustLocalIndexEntity } from "./tauri.js";
 
@@ -273,7 +274,8 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
                 // error - matches the real interface's "never rejects" contract for this method.
                 return false;
             }
-            return searchCommands.destroy(accountId);
+            // Only this mailbox's rows: the account's one index file holds its other mailboxes too.
+            return searchCommands.destroyMailbox(accountId, mailboxUid).catch(() => false);
         },
 
         destroyAll(): Promise<boolean> {
@@ -281,7 +283,9 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
         },
 
         pruneInaccessible(): Promise<void> {
-            return notImplemented("pruneInaccessible");
+            // Not implemented natively yet (no Rust command), but the interface promises this never
+            // rejects - web-client calls it fire-and-forget on every mailbox-list change.
+            return Promise.resolve();
         },
 
         retryPendingDeletions(): Promise<void> {
@@ -294,12 +298,27 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
 }
 
 /**
- * Installs `createNativeSearchTransport()` as `web-client`'s active `LocalIndexTransport`, once, at
- * startup, before any search UI mounts - see this module's own doc comment for why this is currently
- * the installed `@rapidmx/web-client` build exports `setLocalIndexTransport`, so this is the real swap.
- * It stays defensive: a missing export logs a warning rather than throwing. Never throws.
+ * Whether `installNativeSearchTransport()` replaces web-client's own Worker/OPFS transport. Off until
+ * the native transport implements `pruneEntities`, `setWindow` and `setBuilding` (a build pass awaits
+ * `setWindow` right after `init`) and mailboxes are registered with their accounts
+ * (`mailboxRegistry.ts`): installed before then, it would replace a working transport with one that
+ * can't finish a single build. WebView2 and WKWebView support Worker and OPFS, so the default works.
  */
-export async function installNativeSearchTransport(resolveAccountId: (mailboxUid: string) => string | undefined): Promise<void> {
+export const NATIVE_SEARCH_TRANSPORT_READY = false;
+
+/**
+ * Installs `createNativeSearchTransport()` as `web-client`'s active `LocalIndexTransport`, once, at
+ * startup, before any search UI mounts - when `enabled` (`NATIVE_SEARCH_TRANSPORT_READY` by default),
+ * and otherwise does nothing, leaving web-client's default transport in place. It stays defensive:
+ * a missing export logs a warning rather than throwing. Never throws.
+ */
+export async function installNativeSearchTransport(
+    resolveAccountId: (mailboxUid: string) => string | undefined,
+    { enabled = NATIVE_SEARCH_TRANSPORT_READY }: { enabled?: boolean } = {}
+): Promise<void> {
+    if (!enabled) {
+        return;
+    }
     try {
         const module: Record<string, unknown> = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
         const setLocalIndexTransport = module.setLocalIndexTransport;

@@ -70,9 +70,20 @@ async fn fetch_server_info(host: &str) -> AppResult<ServerInfo> {
             "{host} has not configured an auth-server - this RapidMX deployment cannot sign in a native client yet. Ask its administrator to set an auth-server URL."
         )));
     }
+    // The URL the browser is sent to and the tokens are exchanged with - never a plaintext or
+    // non-web one, whatever this server answers.
+    validate_auth_server_url(host, &body.auth_server_url)?;
     Ok(ServerInfo {
         server_url: format!("https://{host}"),
         auth_server_url: body.auth_server_url,
+    })
+}
+
+fn validate_auth_server_url(host: &str, auth_server_url: &str) -> AppResult<()> {
+    crate::oauth::require_https_base_url(auth_server_url).map(|_| ()).map_err(|_| {
+        AppError::Federation(format!(
+            "{host} answered with an auth-server URL that isn't https ({auth_server_url:?}) - refusing to sign in through it."
+        ))
     })
 }
 
@@ -109,6 +120,14 @@ mod tests {
     #[test]
     fn extract_domain_rejects_a_string_with_no_at() {
         assert!(extract_domain("not-an-email").is_err());
+    }
+
+    #[test]
+    fn validate_auth_server_url_refuses_a_non_https_answer() {
+        assert!(validate_auth_server_url("mail.example.com", "https://auth.example.com").is_ok());
+        for bad in ["http://auth.example.com", "file://host/share/x.exe#"] {
+            assert!(matches!(validate_auth_server_url("mail.example.com", bad), Err(AppError::Federation(_))));
+        }
     }
 
     #[test]

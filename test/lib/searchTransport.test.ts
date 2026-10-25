@@ -12,6 +12,7 @@ const indexedVersionsMock = vi.fn();
 const searchMock = vi.fn();
 const getCoverageMock = vi.fn();
 const destroyMock = vi.fn();
+const destroyMailboxMock = vi.fn();
 const destroyAllMock = vi.fn();
 
 vi.mock("../../src/lib/tauri.js", () => ({
@@ -24,11 +25,12 @@ vi.mock("../../src/lib/tauri.js", () => ({
         search: (...args: unknown[]) => searchMock(...args),
         getCoverage: (...args: unknown[]) => getCoverageMock(...args),
         destroy: (...args: unknown[]) => destroyMock(...args),
+        destroyMailbox: (...args: unknown[]) => destroyMailboxMock(...args),
         destroyAll: (...args: unknown[]) => destroyAllMock(...args),
     },
 }));
 
-import { createNativeSearchTransport, installNativeSearchTransport } from "../../src/lib/searchTransport.js";
+import { createNativeSearchTransport, installNativeSearchTransport, NATIVE_SEARCH_TRANSPORT_READY } from "../../src/lib/searchTransport.js";
 
 const resolver = (mailboxUid: string): string | undefined => (mailboxUid === "mb-1" ? "acct-1" : undefined);
 
@@ -42,6 +44,7 @@ describe("createNativeSearchTransport", () => {
         searchMock.mockReset().mockResolvedValue({ hits: [{ entityUid: "e1", rank: 1.5 }] });
         getCoverageMock.mockReset().mockResolvedValue({ entityCount: 3 });
         destroyMock.mockReset().mockResolvedValue(true);
+        destroyMailboxMock.mockReset().mockResolvedValue(true);
         destroyAllMock.mockReset().mockResolvedValue(true);
     });
 
@@ -122,16 +125,23 @@ describe("createNativeSearchTransport", () => {
         expect(coverage).toEqual({ indexedCount: 3, building: false, complete: false });
     });
 
-    it("destroy() delegates when the mailbox resolves to an account", async () => {
+    it("destroy() drops only that mailbox's rows, never the account's whole index", async () => {
         const transport = createNativeSearchTransport(resolver);
         await expect(transport.destroy("mb-1")).resolves.toBe(true);
-        expect(destroyMock).toHaveBeenCalledWith("acct-1");
+        expect(destroyMailboxMock).toHaveBeenCalledWith("acct-1", "mb-1");
+        expect(destroyMock).not.toHaveBeenCalled();
+    });
+
+    it("destroy() resolves false instead of rejecting when the native call fails", async () => {
+        destroyMailboxMock.mockRejectedValueOnce(new Error("invalid account id"));
+        const transport = createNativeSearchTransport(resolver);
+        await expect(transport.destroy("mb-1")).resolves.toBe(false);
     });
 
     it("destroy() resolves false without calling Rust for an unregistered mailbox", async () => {
         const transport = createNativeSearchTransport(resolver);
         await expect(transport.destroy("mb-unknown")).resolves.toBe(false);
-        expect(destroyMock).not.toHaveBeenCalled();
+        expect(destroyMailboxMock).not.toHaveBeenCalled();
     });
 
     it("destroyAll() delegates directly", async () => {
@@ -153,7 +163,12 @@ describe("createNativeSearchTransport", () => {
         expect(indexedVersionsMock).toHaveBeenCalledWith("acct-1", ["e1", "e2"]);
     });
 
-    it.each(["pruneEntities", "setWindow", "setBuilding", "pruneInaccessible"] as const)(
+    it("pruneInaccessible() resolves, keeping the interface's never-rejects contract", async () => {
+        const transport = createNativeSearchTransport(resolver);
+        await expect(transport.pruneInaccessible(["mb-1"])).resolves.toBeUndefined();
+    });
+
+    it.each(["pruneEntities", "setWindow", "setBuilding"] as const)(
         "%s() rejects clearly - no Rust command exists for it yet",
         async (method) => {
             const transport = createNativeSearchTransport(resolver);
@@ -177,6 +192,16 @@ describe("installNativeSearchTransport", () => {
         vi.doUnmock(modulePath);
     });
 
+    it("leaves web-client's own transport in place until the native one is ready", async () => {
+        expect(NATIVE_SEARCH_TRANSPORT_READY).toBe(false);
+        const setLocalIndexTransport = vi.fn();
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport }));
+        const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+        await expect(install(resolver)).resolves.toBeUndefined();
+        expect(setLocalIndexTransport).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
+
     it("logs a warning and does not throw when setLocalIndexTransport isn't exported yet", async () => {
         // Explicitly simulated, not incidental: `@rapidmx/web-client` genuinely exports
         // `setLocalIndexTransport` today (the react-shared merge and web-client's own swappable-
@@ -188,7 +213,7 @@ describe("installNativeSearchTransport", () => {
         // test's own `try/catch` and produce a different warning than the one this test asserts on.
         vi.doMock(modulePath, () => ({ setLocalIndexTransport: undefined }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
-        await expect(install(resolver)).resolves.toBeUndefined();
+        await expect(install(resolver, { enabled: true })).resolves.toBeUndefined();
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("does not export setLocalIndexTransport"));
     });
 
@@ -196,7 +221,7 @@ describe("installNativeSearchTransport", () => {
         const setLocalIndexTransport = vi.fn();
         vi.doMock(modulePath, () => ({ setLocalIndexTransport }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
-        await install(resolver);
+        await install(resolver, { enabled: true });
         expect(setLocalIndexTransport).toHaveBeenCalledTimes(1);
         const transport = setLocalIndexTransport.mock.calls[0][0] as ReturnType<typeof createNativeSearchTransport>;
         expect(typeof transport.nextGeneration).toBe("function");
@@ -207,7 +232,7 @@ describe("installNativeSearchTransport", () => {
             throw new Error("module not found");
         });
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
-        await expect(install(resolver)).resolves.toBeUndefined();
+        await expect(install(resolver, { enabled: true })).resolves.toBeUndefined();
         expect(warnSpy).toHaveBeenCalledWith("[rapidmx] Could not install the native search transport:", expect.any(Error));
     });
 });

@@ -31,7 +31,7 @@ pub mod menu;
 pub mod oauth;
 pub mod search;
 
-use oauth::PendingSignIns;
+use oauth::{session::SessionTokens, PendingSignIns};
 use search::LocalIndexManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,6 +41,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_secure_keystore::init())
         .manage(PendingSignIns::default())
+        .manage(SessionTokens::default())
         .manage(LocalIndexManager::default())
         .setup(|app| {
             let handle = app.handle();
@@ -76,6 +77,7 @@ pub fn run() {
             search::commands::search_local_search,
             search::commands::search_local_get_coverage,
             search::commands::search_local_destroy,
+            search::commands::search_local_destroy_mailbox,
             search::commands::search_local_destroy_all,
         ])
         .run(tauri::generate_context!())

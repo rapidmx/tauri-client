@@ -18,7 +18,7 @@ use crate::accounts::{store as account_store, AccountSummary};
 use crate::error::CommandResult;
 use crate::federation::{self, ServerInfo};
 use crate::keychain;
-use crate::oauth::{self, PendingSignIns};
+use crate::oauth::{self, session::SessionTokens, PendingSignIns};
 
 /// Design doc, "Multi-server 'Add account' flow" steps 1-3 - DNS TXT lookup plus the
 /// `.well-known/rapidmx/server-info` fetch, both done here in Rust (a plain webview `fetch()`
@@ -55,19 +55,21 @@ pub fn list_accounts(app: AppHandle) -> CommandResult<Vec<AccountSummary>> {
 /// such endpoint documented yet (flagged in this repo's README's "Known gaps" section). Succeeds
 /// even if one or both halves were already absent, so a retry after a partial failure is safe.
 #[tauri::command]
-pub fn remove_account(app: AppHandle, account_id: String) -> CommandResult<()> {
+pub fn remove_account(app: AppHandle, sessions: State<'_, SessionTokens>, account_id: String) -> CommandResult<()> {
+    sessions.forget(&account_id);
     account_store::remove(&app, &account_id).map_err(|err| err.to_string())?;
     keychain::delete_refresh_token(&app, &account_id).map_err(|err| err.to_string())
 }
 
-/// A fresh, short-lived session JWT for `account_id` - the `getAccessToken` callback every
-/// account's `@rapidmx/react-shared` `ApiClient` (`src/lib/apiClients.ts`) invokes before each
-/// request. Transparently repeats the OAuth refresh grant and the `/oauth/session-token` exchange
-/// (`oauth::refresh_session_token`) every single call - see that function's own doc comment for why
-/// that's the correct, if not maximally efficient, first pass. Never caches anything itself; a
-/// caller wanting fewer round-trips would need to add caching at this layer or `refresh_session_token`'s
-/// own, not in the frontend.
+/// A valid, short-lived session JWT for `account_id` - the `getAccessToken` callback every
+/// account's `@rapidmx/web-client` `ApiClient` (`src/lib/apiClients.ts`) invokes before each
+/// request. The token is cached per account until shortly before its `exp`, and a refresh
+/// (`oauth::refresh_session_token`) runs under the account's lock, so concurrent requests share one
+/// refresh grant instead of redeeming the same rotating refresh token twice (see `oauth::session`).
 #[tauri::command]
-pub async fn get_session_token(app: AppHandle, account_id: String) -> CommandResult<String> {
-    oauth::refresh_session_token(&app, &account_id).await.map_err(|err| err.to_string())
+pub async fn get_session_token(app: AppHandle, sessions: State<'_, SessionTokens>, account_id: String) -> CommandResult<String> {
+    sessions
+        .get_or_refresh(&account_id, || chrono::Utc::now().timestamp(), || oauth::refresh_session_token(&app, &account_id))
+        .await
+        .map_err(|err| err.to_string())
 }
