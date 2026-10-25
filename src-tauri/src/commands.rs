@@ -54,11 +54,18 @@ pub fn list_accounts(app: AppHandle) -> CommandResult<Vec<AccountSummary>> {
 /// entry (`keychain.rs`). Does not attempt to revoke the token server-side - auth-server has no
 /// such endpoint documented yet (flagged in this repo's README's "Known gaps" section). Succeeds
 /// even if one or both halves were already absent, so a retry after a partial failure is safe.
+///
+/// Runs under the account's session lock (`SessionTokens::remove`), so a refresh in flight stores
+/// its rotated refresh token before the keychain entry is deleted rather than recreating it after.
 #[tauri::command]
-pub fn remove_account(app: AppHandle, sessions: State<'_, SessionTokens>, account_id: String) -> CommandResult<()> {
-    sessions.forget(&account_id);
-    account_store::remove(&app, &account_id).map_err(|err| err.to_string())?;
-    keychain::delete_refresh_token(&app, &account_id).map_err(|err| err.to_string())
+pub async fn remove_account(app: AppHandle, sessions: State<'_, SessionTokens>, account_id: String) -> CommandResult<()> {
+    sessions
+        .remove(&account_id, || {
+            account_store::remove(&app, &account_id)?;
+            keychain::delete_refresh_token(&app, &account_id)
+        })
+        .await
+        .map_err(|err| err.to_string())
 }
 
 /// A valid, short-lived session JWT for `account_id` - the `getAccessToken` callback every
@@ -66,10 +73,18 @@ pub fn remove_account(app: AppHandle, sessions: State<'_, SessionTokens>, accoun
 /// request. The token is cached per account until shortly before its `exp`, and a refresh
 /// (`oauth::refresh_session_token`) runs under the account's lock, so concurrent requests share one
 /// refresh grant instead of redeeming the same rotating refresh token twice (see `oauth::session`).
+///
+/// `rejected_token` is a token a request was just answered 401 with: when it is still the cached
+/// one it is dropped and a fresh one fetched, instead of being served until its expiry.
 #[tauri::command]
-pub async fn get_session_token(app: AppHandle, sessions: State<'_, SessionTokens>, account_id: String) -> CommandResult<String> {
+pub async fn get_session_token(
+    app: AppHandle,
+    sessions: State<'_, SessionTokens>,
+    account_id: String,
+    rejected_token: Option<String>,
+) -> CommandResult<String> {
     sessions
-        .get_or_refresh(&account_id, || chrono::Utc::now().timestamp(), || oauth::refresh_session_token(&app, &account_id))
+        .get_or_refresh(&account_id, rejected_token.as_deref(), || chrono::Utc::now().timestamp(), || oauth::refresh_session_token(&app, &account_id))
         .await
         .map_err(|err| err.to_string())
 }

@@ -158,19 +158,23 @@ fn try_load(plaintext: &[u8]) -> AppResult<Connection> {
     Ok(conn)
 }
 
-/// `entity_version` for whichever of `entity_uids` are indexed, leaving out rows without one - one
-/// batched query, the same as `localIndexWorker.ts`'s `indexedVersions`.
+/// How many uids one `indexed_versions_in` statement binds. SQLite refuses a statement with more
+/// than `SQLITE_MAX_VARIABLE_NUMBER` (32766 in the bundled build) parameters, and a zero-access
+/// sync's live tail can hold more pending uids than that.
+const INDEXED_VERSIONS_CHUNK: usize = 500;
+
+/// `entity_version` for whichever of `entity_uids` are indexed, leaving out rows without one - a
+/// batched query per `INDEXED_VERSIONS_CHUNK` uids, the same as `localIndexWorker.ts`'s `indexedVersions`.
 fn indexed_versions_in(conn: &Connection, entity_uids: &[String]) -> AppResult<HashMap<String, String>> {
     let mut versions = HashMap::new();
-    if entity_uids.is_empty() {
-        return Ok(versions);
-    }
-    let placeholders = vec!["?"; entity_uids.len()].join(", ");
-    let mut stmt = conn.prepare(&format!("SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN ({placeholders}) AND entity_version IS NOT NULL"))?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(entity_uids), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
-    for row in rows {
-        let (uid, version) = row?;
-        versions.insert(uid, version);
+    for chunk in entity_uids.chunks(INDEXED_VERSIONS_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let mut stmt = conn.prepare(&format!("SELECT entity_uid, entity_version FROM entities WHERE entity_uid IN ({placeholders}) AND entity_version IS NOT NULL"))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (uid, version) = row?;
+            versions.insert(uid, version);
+        }
     }
     Ok(versions)
 }
@@ -499,5 +503,33 @@ mod tests {
             .unwrap();
         assert_eq!(rows, vec!["m1".to_string()]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn indexed_versions_answers_for_more_uids_than_one_sqlite_statement_can_bind() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
+
+        // More than SQLite's 32766-parameter limit, with indexed uids at both edges of a chunk.
+        let uids: Vec<String> = (0..40_000).map(|i| format!("m{i}")).collect();
+        let indexed = [0usize, INDEXED_VERSIONS_CHUNK - 1, INDEXED_VERSIONS_CHUNK, 39_999];
+        for &i in &indexed {
+            let e = entity(&uids[i], "mbx-own");
+            conn.execute(
+                UPSERT_ENTITY_SQL,
+                rusqlite::params![
+                    e.entity_type, e.entity_uid, e.mailbox_uid, e.folder_uid, e.date_for_sort, e.participants, e.flags,
+                    i64::from(e.has_attachments), e.subject, e.body, e.attachment_text, e.byte_size, format!("v{i}"),
+                ],
+            )
+            .unwrap();
+        }
+
+        let versions = indexed_versions_in(&conn, &uids).unwrap();
+
+        assert_eq!(versions.len(), indexed.len());
+        for &i in &indexed {
+            assert_eq!(versions.get(&uids[i]), Some(&format!("v{i}")));
+        }
     }
 }

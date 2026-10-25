@@ -104,9 +104,12 @@ export function onSignInError(handler: (payload: SignInErrorPayload) => void): P
  * (`oauth::session`), so concurrent requests never redeem the same rotating refresh token twice.
  * This is exactly the `getAccessToken` callback every account's `ApiClient` needs (see
  * `src/lib/apiClients.ts`), which calls it before every request; nothing is cached on the JS side.
+ *
+ * `rejectedToken` is a token a request was just answered 401 with: when the Rust side still caches
+ * it, it fetches a fresh one instead of serving it again.
  */
-export function getSessionToken(accountId: string): Promise<string> {
-    return invoke<string>("get_session_token", { accountId });
+export function getSessionToken(accountId: string, rejectedToken?: string): Promise<string> {
+    return invoke<string>("get_session_token", rejectedToken === undefined ? { accountId } : { accountId, rejectedToken });
 }
 
 /** Mirrors `search::schema::LocalIndexEntity` (`src-tauri/src/search/schema.rs`) - one indexable

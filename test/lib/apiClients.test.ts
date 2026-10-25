@@ -58,7 +58,23 @@ describe("apiClients", () => {
         syncApiClients([accountA]);
         const options = createApiClientMock.mock.calls[0][0] as { getAccessToken: () => Promise<string> };
         await expect(options.getAccessToken()).resolves.toBe("session-jwt");
-        expect(getSessionTokenMock).toHaveBeenCalledWith("a1");
+        expect(getSessionTokenMock).toHaveBeenCalledWith("a1", undefined);
+    });
+
+    it("passes the token a 401 answered as rejected on the next request only", async () => {
+        const { getApiClient, syncApiClients } = await import("../../src/lib/apiClients.js");
+        syncApiClients([accountA]);
+        const options = createApiClientMock.mock.calls[0][0] as { getAccessToken: () => Promise<string> };
+        const client = getApiClient("a1") as unknown as { setUnauthorizedObserver: ReturnType<typeof vi.fn> };
+        const onUnauthorized = client.setUnauthorizedObserver.mock.calls[0][0] as () => void;
+
+        await options.getAccessToken();
+        onUnauthorized();
+        getSessionTokenMock.mockResolvedValue("fresh-jwt");
+        await expect(options.getAccessToken()).resolves.toBe("fresh-jwt");
+        expect(getSessionTokenMock).toHaveBeenLastCalledWith("a1", "session-jwt");
+        await options.getAccessToken();
+        expect(getSessionTokenMock).toHaveBeenLastCalledWith("a1", undefined);
     });
 
     it("keeps an existing client for an account still present on a later sync", async () => {

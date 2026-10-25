@@ -24,8 +24,9 @@
  * defaults there is acceptable") - so an `undefined` here is a real, working degraded state, not a
  * crash.
  */
-import { createApiClient, type ApiClient } from "@rapidmx/web-client/lib/util/api.js";
-import { getSessionToken, type AccountSummary } from "./tauri.js";
+import type { ApiClient } from "@rapidmx/web-client/lib/util/api.js";
+import { createAccountApiClient } from "./apiClients.js";
+import type { AccountSummary } from "./tauri.js";
 
 /** Mirrors `react-shared/src/branding/brandingApi.ts`'s `Branding` - not imported from there
  * because that module's only exports are `apiFetch()`-bound functions this file deliberately
@@ -82,10 +83,7 @@ export async function resolveWwwShellProps(account: AccountSummary, apiClient: A
  * one simply means no per-user appearance. */
 async function currentUserUid(account: AccountSummary): Promise<string | undefined> {
     try {
-        const authClient = createApiClient({
-            baseUrl: account.authServerUrl,
-            getAccessToken: () => getSessionToken(account.id),
-        });
+        const authClient = createAccountApiClient(account.id, account.authServerUrl);
         const profile = await authClient.fetch<{ uid: string }>("/profiles/me");
         return profile.uid;
     } catch (err) {

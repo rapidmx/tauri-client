@@ -72,7 +72,7 @@ describe("resolveWwwShellProps", () => {
         expect(props.userUid).toBe("user-42");
         const options = createApiClientMock.mock.calls[0][0] as { getAccessToken: () => Promise<string> };
         await expect(options.getAccessToken()).resolves.toBe("session-token");
-        expect(getSessionTokenMock).toHaveBeenCalledWith("a1");
+        expect(getSessionTokenMock).toHaveBeenCalledWith("a1", undefined);
     });
 
     it("leaves the uid undefined, logging a warning, when the profile cannot be read", async () => {

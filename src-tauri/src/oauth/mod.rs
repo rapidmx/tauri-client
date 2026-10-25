@@ -109,8 +109,17 @@ pub fn require_https_base_url(value: &str) -> AppResult<Url> {
     Ok(url)
 }
 
+/// Bounds every auth-server call. A refresh runs while holding its account's session lock
+/// (`session::SessionTokens`), so a response that never comes would otherwise block every later
+/// request for that account until the app restarts. Generous on purpose: a timeout after
+/// auth-server rotated the refresh token loses the rotated one, as any network failure there does.
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn http_client() -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .timeout(HTTP_REQUEST_TIMEOUT)
         .build()
         .map_err(AppError::Http)
 }
@@ -221,7 +230,7 @@ async fn exchange_code_for_session(
 ///
 /// Called by the `get_session_token` command (`commands.rs`) through `session::SessionTokens`, which
 /// serializes refreshes per account and reuses the resulting session JWT until shortly before its
-/// `exp`: the frontend's `getAccessToken` callback (`src/lib/apiClients.ts`) runs before every
+/// expiry: the frontend's `getAccessToken` callback (`src/lib/apiClients.ts`) runs before every
 /// request, and auth-server rotates the refresh token on every redemption and revokes the whole
 /// family when a rotated one is presented again, so two overlapping calls here would sign the account
 /// out. The rotated refresh token is stored before the session-token exchange, so a failure there
@@ -247,6 +256,14 @@ pub async fn refresh_session_token(app: &AppHandle, account_id: &str) -> AppResu
         .map_err(AppError::Http)?
         .json()
         .await?;
+
+    // The account was removed while the grant was in flight. `remove_account` waits for a refresh
+    // holding the account's session lock, so this is defence in depth for a caller that doesn't
+    // take it: storing now would recreate the keychain entry the removal deleted, with nothing left
+    // to delete it.
+    if account_store::find(app, account_id)?.is_none() {
+        return Err(AppError::AccountNotFound(account_id.to_string()));
+    }
 
     // A refresh grant commonly rotates the refresh token itself (auth-server's own choice, not
     // confirmed here) - always overwrite the stored one with whatever came back, which is correct

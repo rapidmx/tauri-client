@@ -9,11 +9,15 @@
 //! Two delivery paths, both handled identically here (mirroring the deep-link plugin's own
 //! documented "two ways to receive a URL"):
 //! - `on_open_url` - the app was already running when the OS routed the URL to it (the ordinary
-//!   case: the user was sent back to this already-open app from their browser).
-//! - `get_current` - the URL that *launched* this app process, checked once at startup. Realistic
-//!   for a cold-started app on some platforms/OS versions where the deep link launches a fresh
-//!   process rather than activating an existing one; harmless to also check here even where it
-//!   can't happen.
+//!   case: the user was sent back to this already-open app from their browser). macOS and the
+//!   mobile platforms deliver it here themselves. Windows and Linux instead start a second process
+//!   with the URL on its command line; `tauri-plugin-single-instance` (registered first in
+//!   `lib.rs`, with its `deep-link` feature) forwards that URL here and exits the second process.
+//!   That matters for sign-in: the pending PKCE state lives only in the memory of the instance
+//!   that called `begin_sign_in`, so a second process could never complete it.
+//! - `get_current` - the URL that *launched* this app process, checked once at startup. Only a
+//!   real cold start reaches it now (no instance was running), where no sign-in can be pending, so
+//!   a callback arriving this way fails with "no matching pending sign-in" and the user starts over.
 //!
 //! **Not verified against a real OS or a real auth-server** (see `.claude/NOTES.md`) - this module
 //! was written against the deep-link plugin's own documented Rust API
@@ -71,6 +75,11 @@ fn describe_for_user(err: &AppError) -> String {
 /// Registers this app's deep-link handling. Called once from `lib.rs`'s `setup()`, before the
 /// first window is shown.
 pub fn register(app: &AppHandle) -> tauri::Result<()> {
+    // A dev build isn't installed by the bundler, so nothing registered the `rapidmx` scheme for it
+    // on Windows or Linux. Best effort: a failure only means the browser can't hand the callback back.
+    #[cfg(all(debug_assertions, any(windows, target_os = "linux")))]
+    let _ = app.deep_link().register_all();
+
     let handle_for_open = app.clone();
     app.deep_link().on_open_url(move |event| {
         for url in event.urls() {

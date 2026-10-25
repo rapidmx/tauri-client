@@ -90,6 +90,15 @@ thiserror = "2"
 url = "2"
 chrono = { version = "0.4", features = ["serde"] }
 
+# --- Desktop only: one running instance per user --------------------------------------------------
+# On Windows and Linux the OS hands a `rapidmx://auth/callback` deep link to a NEW process (the
+# deep-link plugin's own README), which has none of the running instance's in-memory pending PKCE
+# sign-ins. With the `deep-link` feature the plugin forwards that second launch's URL to the running
+# instance's `on_open_url` handler and exits it. macOS and the mobile platforms deliver deep links to
+# the running app themselves.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = { version = "2.4", features = ["deep-link"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -22,12 +22,37 @@
  * `getAccessToken` calls the `get_session_token` Tauri command (`src/lib/tauri.ts`) before every
  * request (`createApiClient()` doesn't cache it). The Rust side caches the session JWT per account and
  * serializes refreshes (`oauth::session`), so this module needs no caching or refresh scheduling of
- * its own.
+ * its own. It only tells the Rust side, on the next request, which token a 401 answered
+ * (`createAccountApiClient()`), so a token the server no longer accepts isn't served until its expiry.
  */
 import { createApiClient, type ApiClient } from "@rapidmx/web-client/lib/util/api.js";
 import { getSessionToken, type AccountSummary } from "./tauri.js";
 
 const clients = new Map<string, ApiClient>();
+
+/**
+ * An `ApiClient` for `baseUrl` authenticated as `accountId` through `get_session_token`. When a
+ * request is answered 401, the next one passes the token it last handed out as rejected, so the Rust
+ * side drops it if it still caches it and fetches a fresh one (once: callers rejecting a token already
+ * replaced get the replacement). Registers the client's unauthorized observer for that.
+ */
+export function createAccountApiClient(accountId: string, baseUrl: string): ApiClient {
+    let lastToken: string | undefined;
+    let rejected: string | undefined;
+    const client = createApiClient({
+        baseUrl,
+        getAccessToken: async () => {
+            const rejectedToken = rejected;
+            rejected = undefined;
+            lastToken = await getSessionToken(accountId, rejectedToken);
+            return lastToken;
+        },
+    });
+    client.setUnauthorizedObserver(() => {
+        rejected = lastToken;
+    });
+    return client;
+}
 
 /** The live `ApiClient` for `accountId`, or `undefined` if that account has no client yet (it was
  * never passed to `syncApiClients()`, or has since been removed). */
@@ -51,13 +76,7 @@ export function syncApiClients(accounts: AccountSummary[]): void {
     }
     for (const account of accounts) {
         if (!clients.has(account.id)) {
-            clients.set(
-                account.id,
-                createApiClient({
-                    baseUrl: account.serverUrl,
-                    getAccessToken: () => getSessionToken(account.id),
-                })
-            );
+            clients.set(account.id, createAccountApiClient(account.id, account.serverUrl));
         }
     }
 }

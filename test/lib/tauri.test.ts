@@ -97,6 +97,13 @@ describe("src/lib/tauri", () => {
         expect(result).toBe("session-jwt");
     });
 
+    it("getSessionToken passes a token a request was answered 401 with as rejectedToken", async () => {
+        const { getSessionToken } = await import("../../src/lib/tauri.js");
+        invokeMock.mockResolvedValueOnce("fresh-jwt");
+        await expect(getSessionToken("a1", "stale-jwt")).resolves.toBe("fresh-jwt");
+        expect(invokeMock).toHaveBeenCalledWith("get_session_token", { accountId: "a1", rejectedToken: "stale-jwt" });
+    });
+
     describe("searchCommands", () => {
         it("init invokes search_local_init with the account id and base64 key", async () => {
             const { searchCommands } = await import("../../src/lib/tauri.js");

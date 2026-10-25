@@ -36,7 +36,15 @@ use search::LocalIndexManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Registered first, as the plugin requires: a second launch (on Windows and Linux, the one the OS
+    // starts for a `rapidmx://auth/callback` deep link) hands its URL to this instance's deep-link
+    // `on_open_url` handler, where the pending sign-in lives, and exits. See `deep_link`.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        focus_main_window(app);
+    }));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_secure_keystore::init())
@@ -82,4 +90,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running the RapidMX Tauri application");
+}
+
+/// Brings the main window forward when a second launch was folded into this instance (the user
+/// came back from their browser's sign-in page, or started the app again). Best effort.
+#[cfg(desktop)]
+fn focus_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
