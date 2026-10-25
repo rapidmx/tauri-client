@@ -98,6 +98,9 @@ END;
 /// column order - see this module's own doc comment on why the order is load-bearing.
 pub const BM25_WEIGHTS_SQL: &str = "3.0, 2.0, 1.0, 1.0";
 
+/// `entity_uid` upsert - mirrors `localIndexSchema.ts`'s `UPSERT_ENTITY_SQL`. A row written without a
+/// folder, flags or version (a zero-access document imported from the server, which carries none)
+/// keeps the ones recorded: re-importing it must not make it look unrecorded again.
 pub const UPSERT_ENTITY_SQL: &str = "
 INSERT INTO entities (entity_type, entity_uid, mailbox_uid, folder_uid, date_for_sort, participants, flags, has_attachments, subject, body, attachment_text, byte_size, entity_version)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -105,7 +108,7 @@ ON CONFLICT(entity_uid) DO UPDATE SET
     folder_uid = COALESCE(excluded.folder_uid, entities.folder_uid), date_for_sort = excluded.date_for_sort, participants = excluded.participants,
     flags = CASE WHEN excluded.flags = '' THEN entities.flags ELSE excluded.flags END, has_attachments = excluded.has_attachments, subject = excluded.subject,
     body = excluded.body, attachment_text = excluded.attachment_text, byte_size = excluded.byte_size,
-    entity_version = excluded.entity_version
+    entity_version = COALESCE(excluded.entity_version, entities.entity_version)
 ";
 
 /// Re-points an indexed message at a new folder in place - mirrors `localIndexWorker.ts`'s
@@ -276,6 +279,22 @@ mod tests {
         assert_eq!(row(&conn, "m1"), (Some("inbox".to_string()), ",read,".to_string(), Some("v2".to_string())));
         upsert(&conn, &entity("m1", Some("archive"), ",flagged,", "v3"));
         assert_eq!(row(&conn, "m1"), (Some("archive".to_string()), ",flagged,".to_string(), Some("v3".to_string())));
+    }
+
+    #[test]
+    fn upsert_keeps_a_recorded_version_when_the_incoming_row_has_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
+        upsert(&conn, &entity("m1", Some("inbox"), ",read,", "v1"));
+        // A zero-access document imported again carries no version: the recorded one stays.
+        let mut imported = entity("m1", None, "", "unused");
+        imported.entity_version = None;
+        upsert(&conn, &imported);
+        assert_eq!(row(&conn, "m1"), (Some("inbox".to_string()), ",read,".to_string(), Some("v1".to_string())));
+        assert_eq!(super::super::indexed_versions_in(&conn, &["m1".to_string()]).unwrap().get("m1").map(String::as_str), Some("v1"));
+        // One that carries a version replaces it.
+        upsert(&conn, &entity("m1", None, "", "v2"));
+        assert_eq!(row(&conn, "m1").2.as_deref(), Some("v2"));
     }
 
     #[test]
