@@ -180,8 +180,8 @@ export const searchCommands = {
     removeEntity(accountId: string, entityUid: string): Promise<void> {
         return invoke<void>("search_local_remove_entity", { accountId, entityUid });
     },
-    moveEntity(accountId: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
-        return invoke<void>("search_local_move_entity", { accountId, entityUid, folderUid, entityVersion: entityVersion ?? null });
+    moveEntity(accountId: string, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void> {
+        return invoke<void>("search_local_move_entity", { accountId, entityUid, folderUid, entityVersion: entityVersion ?? null, flags: flags ?? null });
     },
     indexedVersions(accountId: string, entityUids: string[]): Promise<Record<string, string>> {
         return invoke<Record<string, string>>("search_local_indexed_versions", { accountId, entityUids });

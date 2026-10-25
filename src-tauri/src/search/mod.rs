@@ -308,10 +308,11 @@ impl LocalIndexManager {
     }
 
     /// Re-points an indexed message at a new folder in place (an archive, a move) - mirrors
-    /// `moveLocalEntity()`. A no-op if `entity_uid` isn't present.
-    pub fn move_entity(&self, account_id: &str, entity_uid: &str, folder_uid: &str, entity_version: Option<&str>) -> AppResult<()> {
+    /// `moveLocalEntity()`, setting its flags too when `flags` (`,a,b,`) is given. A no-op if
+    /// `entity_uid` isn't present.
+    pub fn move_entity(&self, account_id: &str, entity_uid: &str, folder_uid: &str, entity_version: Option<&str>, flags: Option<&str>) -> AppResult<()> {
         self.with_connection_persisted(account_id, |conn| {
-            conn.execute(MOVE_ENTITY_SQL, rusqlite::params![folder_uid, entity_version, entity_uid])?;
+            conn.execute(MOVE_ENTITY_SQL, rusqlite::params![folder_uid, entity_version, entity_uid, flags])?;
             Ok(())
         })
     }

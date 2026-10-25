@@ -57,8 +57,9 @@ pub fn search_local_move_entity(
     entity_uid: String,
     folder_uid: String,
     entity_version: Option<String>,
+    flags: Option<String>,
 ) -> CommandResult<()> {
-    manager.move_entity(&account_id, &entity_uid, &folder_uid, entity_version.as_deref()).map_err(|err| err.to_string())
+    manager.move_entity(&account_id, &entity_uid, &folder_uid, entity_version.as_deref(), flags.as_deref()).map_err(|err| err.to_string())
 }
 
 /// Mirrors `getIndexedVersions()`.

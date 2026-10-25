@@ -110,8 +110,9 @@ ON CONFLICT(entity_uid) DO UPDATE SET
 
 /// Re-points an indexed message at a new folder in place - mirrors `localIndexWorker.ts`'s
 /// `moveEntity`. `entity_version` is set to the caller's (or cleared when it passes none), so the
-/// next build pass re-validates a row moved without one.
-pub const MOVE_ENTITY_SQL: &str = "UPDATE entities SET folder_uid = ?1, entity_version = ?2 WHERE entity_uid = ?3";
+/// next build pass re-validates a row moved without one. Its flags (`?4`, `,a,b,`) are set too when
+/// given, and kept when not.
+pub const MOVE_ENTITY_SQL: &str = "UPDATE entities SET folder_uid = ?1, entity_version = ?2, flags = COALESCE(?4, flags) WHERE entity_uid = ?3";
 
 /// One message's decrypted content, ready to index - mirrors `LocalIndexEntity` in
 /// `localIndexSchema.ts` field-for-field (camelCase over IPC/JSON, matching a future frontend's
@@ -282,17 +283,31 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
         upsert(&conn, &entity("m1", Some("inbox"), ",read,", "v1"));
-        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["archive", Some("v2"), "m1"]).unwrap();
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["archive", Some("v2"), "m1", None::<String>]).unwrap();
         assert_eq!(row(&conn, "m1").0.as_deref(), Some("archive"));
         assert_eq!(row(&conn, "m1").2.as_deref(), Some("v2"));
-        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", None::<String>, "m1"]).unwrap();
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", None::<String>, "m1", None::<String>]).unwrap();
         assert_eq!(row(&conn, "m1").2, None);
         assert_eq!(super::super::indexed_versions_in(&conn, &["m1".to_string()]).unwrap().len(), 0);
-        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", Some("v3"), "m1"]).unwrap();
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", Some("v3"), "m1", None::<String>]).unwrap();
         let versions = super::super::indexed_versions_in(&conn, &["m1".to_string(), "missing".to_string()]).unwrap();
         assert_eq!(versions.get("m1").map(String::as_str), Some("v3"));
         assert_eq!(versions.len(), 1);
         assert!(super::super::indexed_versions_in(&conn, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn move_entity_sets_flags_when_given_and_keeps_them_otherwise() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(CREATE_SCHEMA_SQL).unwrap();
+        upsert(&conn, &entity("m1", Some("inbox"), ",read,", "v1"));
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["archive", Some("v2"), "m1", Some(",read,flagged,")]).unwrap();
+        assert_eq!(row(&conn, "m1"), (Some("archive".to_string()), ",read,flagged,".to_string(), Some("v2".to_string())));
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", Some("v3"), "m1", None::<String>]).unwrap();
+        assert_eq!(row(&conn, "m1"), (Some("inbox".to_string()), ",read,flagged,".to_string(), Some("v3".to_string())));
+        // No flags set at all is a value too.
+        conn.execute(MOVE_ENTITY_SQL, rusqlite::params!["inbox", Some("v4"), "m1", Some(",,")]).unwrap();
+        assert_eq!(row(&conn, "m1").1, ",,");
     }
 
     #[test]

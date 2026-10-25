@@ -158,7 +158,10 @@ describe("createNativeSearchTransport", () => {
     it("moveEntity() and indexedVersions() delegate with the resolved account id", async () => {
         const transport = createNativeSearchTransport(resolver);
         await transport.moveEntity("mb-1", "e1", "archive", "v2");
-        expect(moveEntityMock).toHaveBeenCalledWith("acct-1", "e1", "archive", "v2");
+        expect(moveEntityMock).toHaveBeenCalledWith("acct-1", "e1", "archive", "v2", undefined);
+        // A row's flags go along, so a zero-access row keeps them.
+        await transport.moveEntity("mb-1", "e1", "archive", "v3", ",read,flagged,");
+        expect(moveEntityMock).toHaveBeenLastCalledWith("acct-1", "e1", "archive", "v3", ",read,flagged,");
         await expect(transport.indexedVersions("mb-1", ["e1", "e2"])).resolves.toEqual({ e1: "v1" });
         expect(indexedVersionsMock).toHaveBeenCalledWith("acct-1", ["e1", "e2"]);
     });

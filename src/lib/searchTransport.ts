@@ -118,7 +118,8 @@ export interface LocalIndexTransport {
     init(params: InitParams): Promise<void>;
     indexEntities(mailboxUid: string, entities: RustLocalIndexEntity[], generation?: number): Promise<IndexEntitiesResult>;
     removeEntity(mailboxUid: string, entityUid: string): Promise<void>;
-    moveEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void>;
+    /** `flags` (`,a,b,`), when given, replaces the row's flags too. */
+    moveEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void>;
     indexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>>;
     pruneEntities(
         mailboxUid: string,
@@ -211,8 +212,8 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
             await searchCommands.removeEntity(accountId, entityUid);
         },
 
-        async moveEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string): Promise<void> {
-            await searchCommands.moveEntity(accountIdFor(mailboxUid), entityUid, folderUid, entityVersion);
+        async moveEntity(mailboxUid: string, entityUid: string, folderUid: string, entityVersion?: string, flags?: string): Promise<void> {
+            await searchCommands.moveEntity(accountIdFor(mailboxUid), entityUid, folderUid, entityVersion, flags);
         },
 
         indexedVersions(mailboxUid: string, entityUids: string[]): Promise<Record<string, string>> {
