@@ -19,13 +19,17 @@
  * key, so React discards and recreates the DOM node itself rather than reusing one `mountRouter()`
  * already called `createRoot()` on - `ReactDOMClient.createRoot()` on an already-rendered container
  * is a hard error otherwise. A fresh node every switch also means a fresh `Router` instance, so one
- * account's navigation history/scroll state is never carried into another's.
+ * account's navigation history/scroll state is never carried into another's. The node leaving the page
+ * does not stop the previous router, though: each mount goes through a `src/lib/mountScope.ts` scope
+ * that the effect disposes on the next switch, which removes that router's window/document listeners
+ * and unmounts its pages and shell.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { mountRouter } from "@rapidrest/react/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getApiClient, syncApiClients } from "./lib/apiClients.js";
 import { unregisterAccountMailboxes } from "./lib/mailboxRegistry.js";
+import { createMountScope } from "./lib/mountScope.js";
 import { setActiveAccountConfig } from "./lib/rapidmxShim.js";
 import { loadWwwShell, wwwRoutes } from "./lib/routes.js";
 import { resolveWwwShellProps } from "./lib/shellProps.js";
@@ -48,9 +52,6 @@ export function App(): React.JSX.Element {
     const [email, setEmail] = useState("");
     const [status, setStatus] = useState<{ message: string; tone: "info" | "error" } | undefined>(undefined);
     const [pending, setPending] = useState(false);
-    // Guards against a `mountRouter()` call that resolves after a *different* account has since
-    // become active (a slow `resolveProps` branding fetch, say) from overwriting the newer mount.
-    const mountToken = useRef(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -111,19 +112,27 @@ export function App(): React.JSX.Element {
         }
         setActiveAccountConfig({ serverUrl: activeAccount.serverUrl, authServerUrl: activeAccount.authServerUrl });
 
-        const token = ++mountToken.current;
+        // Disposed when another account becomes active (or the app unmounts): a mount that has not
+        // started yet is skipped, and one already in flight or done loses its listeners and pages.
+        const scope = createMountScope();
         const account = activeAccount;
         void (async () => {
             const shell = await loadWwwShell();
-            if (mountToken.current !== token) {
+            if (scope.signal.aborted) {
                 return;
             }
-            await mountRouter(wwwRoutes, {
-                rootId: APP_MOUNT_ID,
-                shell,
-                resolveProps: () => resolveWwwShellProps(account, getApiClient(account.id)),
-            });
+            await mountRouter(
+                wwwRoutes,
+                {
+                    rootId: APP_MOUNT_ID,
+                    shell: scope.wrapShell(shell),
+                    resolveProps: () => resolveWwwShellProps(account, getApiClient(account.id)),
+                },
+                scope.win,
+                scope.doc
+            );
         })();
+        return () => scope.dispose();
     }, [activeAccount]);
 
     const handleAddAccount = useCallback(

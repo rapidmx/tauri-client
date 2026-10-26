@@ -93,4 +93,13 @@ describe("apiClients", () => {
         expect(getApiClient("a1")).toBeUndefined();
         expect(getApiClient("b2")).toBeDefined();
     });
+
+    it("counts every synced, still signed-in account", async () => {
+        const { signedInAccountCount, syncApiClients } = await import("../../src/lib/apiClients.js");
+        expect(signedInAccountCount()).toBe(0);
+        syncApiClients([accountA, accountB]);
+        expect(signedInAccountCount()).toBe(2);
+        syncApiClients([accountB]);
+        expect(signedInAccountCount()).toBe(1);
+    });
 });

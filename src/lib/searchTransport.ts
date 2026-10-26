@@ -35,7 +35,9 @@
  * dynamically imports `localIndexRpcClient.js` and calls `setLocalIndexTransport` when it is present
  * as a function. The fallback (a logged warning, not a throw) only runs if a future `web-client`
  * build drops that export. **It is switched off** (`NATIVE_SEARCH_TRANSPORT_READY`) until this
- * transport can complete a build pass, so web-client's own Worker/OPFS transport stays installed.
+ * transport can complete a build pass, so web-client's own Worker/OPFS transport stays installed,
+ * wrapped so its prune never deletes another signed-in account's indexes
+ * (`createMultiAccountWorkerTransport()`).
  */
 import { searchCommands, type LocalIndexEntity as RustLocalIndexEntity } from "./tauri.js";
 
@@ -308,18 +310,41 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
 export const NATIVE_SEARCH_TRANSPORT_READY = false;
 
 /**
- * Installs `createNativeSearchTransport()` as `web-client`'s active `LocalIndexTransport`, once, at
- * startup, before any search UI mounts - when `enabled` (`NATIVE_SEARCH_TRANSPORT_READY` by default),
- * and otherwise does nothing, leaving web-client's default transport in place. It stays defensive:
- * a missing export logs a warning rather than throwing. Never throws.
+ * web-client's own Worker/OPFS `worker` transport, with `pruneInaccessible` skipped while more than one
+ * account is signed in. web-client prunes with the active account's mailbox list on every mailbox-list
+ * change, assuming one user per origin; here every account shares this webview's origin and so its
+ * OPFS, and that prune would delete every other signed-in account's local index directories (a full
+ * download-and-decrypt rebuild of a zero-access mailbox, with no full-text search until it finishes).
+ * With one account signed in the prune runs as before, which is also what clears a removed account's
+ * directories once only one account is left; until then they stay, still encrypted under that
+ * mailbox's derived index key.
+ */
+export function createMultiAccountWorkerTransport(
+    worker: LocalIndexTransport,
+    signedInAccountCount: () => number
+): LocalIndexTransport {
+    return {
+        ...worker,
+        pruneInaccessible(accessibleMailboxUids: Iterable<string>): Promise<void> {
+            return signedInAccountCount() === 1 ? worker.pruneInaccessible(accessibleMailboxUids) : Promise.resolve();
+        },
+    };
+}
+
+/**
+ * Installs `web-client`'s active `LocalIndexTransport`, once, at startup, before any search UI mounts:
+ * `createNativeSearchTransport()` when `enabled` (`NATIVE_SEARCH_TRANSPORT_READY` by default), and
+ * otherwise web-client's own Worker/OPFS transport wrapped by `createMultiAccountWorkerTransport()`
+ * (left as it is when this build exports no `workerLocalIndexTransport`). It stays defensive: a
+ * missing export logs a warning rather than throwing. Never throws.
  */
 export async function installNativeSearchTransport(
     resolveAccountId: (mailboxUid: string) => string | undefined,
-    { enabled = NATIVE_SEARCH_TRANSPORT_READY }: { enabled?: boolean } = {}
+    {
+        enabled = NATIVE_SEARCH_TRANSPORT_READY,
+        signedInAccountCount = () => 0,
+    }: { enabled?: boolean; signedInAccountCount?: () => number } = {}
 ): Promise<void> {
-    if (!enabled) {
-        return;
-    }
     try {
         const module: Record<string, unknown> = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
         const setLocalIndexTransport = module.setLocalIndexTransport;
@@ -330,7 +355,15 @@ export async function installNativeSearchTransport(
             );
             return;
         }
-        (setLocalIndexTransport as (transport: LocalIndexTransport) => void)(createNativeSearchTransport(resolveAccountId));
+        const install = setLocalIndexTransport as (transport: LocalIndexTransport) => void;
+        if (enabled) {
+            install(createNativeSearchTransport(resolveAccountId));
+            return;
+        }
+        const worker = module.workerLocalIndexTransport as LocalIndexTransport | undefined;
+        if (worker) {
+            install(createMultiAccountWorkerTransport(worker, signedInAccountCount));
+        }
     } catch (err) {
         console.warn("[rapidmx] Could not install the native search transport:", err);
     }

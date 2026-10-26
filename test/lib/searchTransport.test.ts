@@ -30,7 +30,13 @@ vi.mock("../../src/lib/tauri.js", () => ({
     },
 }));
 
-import { createNativeSearchTransport, installNativeSearchTransport, NATIVE_SEARCH_TRANSPORT_READY } from "../../src/lib/searchTransport.js";
+import {
+    createMultiAccountWorkerTransport,
+    createNativeSearchTransport,
+    installNativeSearchTransport,
+    NATIVE_SEARCH_TRANSPORT_READY,
+    type LocalIndexTransport,
+} from "../../src/lib/searchTransport.js";
 
 const resolver = (mailboxUid: string): string | undefined => (mailboxUid === "mb-1" ? "acct-1" : undefined);
 
@@ -181,6 +187,30 @@ describe("createNativeSearchTransport", () => {
     );
 });
 
+describe("createMultiAccountWorkerTransport", () => {
+    const worker = (): LocalIndexTransport =>
+        ({
+            nextGeneration: vi.fn(() => 7),
+            pruneInaccessible: vi.fn(() => Promise.resolve()),
+        }) as unknown as LocalIndexTransport;
+
+    it("prunes through the worker transport while exactly one account is signed in", async () => {
+        const inner = worker();
+        const transport = createMultiAccountWorkerTransport(inner, () => 1);
+        await expect(transport.pruneInaccessible(["mb-1"])).resolves.toBeUndefined();
+        expect(inner.pruneInaccessible).toHaveBeenCalledWith(["mb-1"]);
+        // Every other method is the worker transport's own.
+        expect(transport.nextGeneration()).toBe(7);
+    });
+
+    it.each([2, 0])("skips the prune, so other accounts' indexes stay, with %i accounts signed in", async (count) => {
+        const inner = worker();
+        const transport = createMultiAccountWorkerTransport(inner, () => count);
+        await expect(transport.pruneInaccessible(["mb-1"])).resolves.toBeUndefined();
+        expect(inner.pruneInaccessible).not.toHaveBeenCalled();
+    });
+});
+
 describe("installNativeSearchTransport", () => {
     const modulePath = "@rapidmx/web-client/shared/search/localIndexRpcClient.js";
     let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -195,10 +225,39 @@ describe("installNativeSearchTransport", () => {
         vi.doUnmock(modulePath);
     });
 
-    it("leaves web-client's own transport in place until the native one is ready", async () => {
+    it("keeps web-client's own Worker transport until the native one is ready, with its prune gated", async () => {
         expect(NATIVE_SEARCH_TRANSPORT_READY).toBe(false);
         const setLocalIndexTransport = vi.fn();
-        vi.doMock(modulePath, () => ({ setLocalIndexTransport }));
+        const workerPrune = vi.fn(() => Promise.resolve());
+        const workerLocalIndexTransport = { search: vi.fn(), pruneInaccessible: workerPrune };
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport }));
+        const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+        let accounts = 2;
+        await expect(install(resolver, { signedInAccountCount: () => accounts })).resolves.toBeUndefined();
+        expect(setLocalIndexTransport).toHaveBeenCalledTimes(1);
+        const installed = setLocalIndexTransport.mock.calls[0][0] as LocalIndexTransport;
+        expect(installed.search).toBe(workerLocalIndexTransport.search);
+        await installed.pruneInaccessible(["mb-1"]);
+        expect(workerPrune).not.toHaveBeenCalled();
+        accounts = 1;
+        await installed.pruneInaccessible(["mb-1"]);
+        expect(workerPrune).toHaveBeenCalledWith(["mb-1"]);
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("never prunes when no account count is supplied", async () => {
+        const setLocalIndexTransport = vi.fn();
+        const workerPrune = vi.fn(() => Promise.resolve());
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport: { pruneInaccessible: workerPrune } }));
+        const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+        await install(resolver);
+        await (setLocalIndexTransport.mock.calls[0][0] as LocalIndexTransport).pruneInaccessible(["mb-1"]);
+        expect(workerPrune).not.toHaveBeenCalled();
+    });
+
+    it("leaves the transport alone when this web-client build exports no Worker transport", async () => {
+        const setLocalIndexTransport = vi.fn();
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport: undefined }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
         await expect(install(resolver)).resolves.toBeUndefined();
         expect(setLocalIndexTransport).not.toHaveBeenCalled();

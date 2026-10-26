@@ -322,6 +322,34 @@ describe("App", () => {
         await waitFor(() => expect(mountRouterMock).toHaveBeenCalledTimes(2));
     });
 
+    it("disposes the previous account's mount on a switch, and the active one on unmount", async () => {
+        listAccountsMock.mockResolvedValue([account, accountB]);
+        const { App } = await import("../src/App.js");
+        const { unmount } = render(<App />);
+        await waitFor(() => expect(mountRouterMock).toHaveBeenCalledTimes(1));
+        // mountRouter() is handed the scope's document: a listener added through it stands in for the
+        // router's own click listener.
+        const listenerOf = (call: number): ReturnType<typeof vi.fn> => {
+            const listener = vi.fn();
+            (mountRouterMock.mock.calls[call][3] as Document).addEventListener("ping", listener);
+            return listener;
+        };
+        const first = listenerOf(0);
+        const firstShell = (mountRouterMock.mock.calls[0][1] as { shell: unknown }).shell;
+        expect(typeof firstShell).toBe("function");
+
+        fireEvent.click(screen.getByRole("button", { name: /Personal.*me@example.org/ }));
+        await waitFor(() => expect(mountRouterMock).toHaveBeenCalledTimes(2));
+        const second = listenerOf(1);
+        document.dispatchEvent(new Event("ping"));
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledTimes(1);
+
+        unmount();
+        document.dispatchEvent(new Event("ping"));
+        expect(second).toHaveBeenCalledTimes(1);
+    });
+
     it("falls back to the first remaining account when the active one is removed", async () => {
         listAccountsMock.mockResolvedValue([account, accountB]);
         removeAccountMock.mockResolvedValue(undefined);
