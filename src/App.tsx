@@ -23,10 +23,14 @@
  * does not stop the previous router, though: each mount goes through a `src/lib/mountScope.ts` scope
  * that the effect disposes on the next switch, which removes that router's window/document listeners
  * and unmounts its pages and shell.
+ *
+ * The shell's own "Sign out" signs out only the active account: its local indexes are destroyed (not the
+ * other accounts'), the account is removed, and the app reloads (`src/lib/accountSession.ts`).
  */
 import { useCallback, useEffect, useState } from "react";
 import { mountRouter } from "@rapidrest/react/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { onShellSignOut, reloadApp, recordActiveAccount } from "./lib/accountSession.js";
 import { getApiClient, syncApiClients } from "./lib/apiClients.js";
 import { unregisterAccountMailboxes } from "./lib/mailboxRegistry.js";
 import { createMountScope } from "./lib/mountScope.js";
@@ -106,6 +110,7 @@ export function App(): React.JSX.Element {
     // Points `window.rapidmx` at the active account and mounts its `apps/www` pages - see this
     // file's own doc comment for why the container is `key`ed by account id rather than reused.
     useEffect(() => {
+        recordActiveAccount(activeAccount?.id);
         if (!activeAccount) {
             setActiveAccountConfig(undefined);
             return;
@@ -157,6 +162,25 @@ export function App(): React.JSX.Element {
                 });
         },
         [email]
+    );
+
+    // The shell's own "Sign out" (see `src/lib/accountSession.ts`): once its local indexes are gone, the
+    // account is removed (its record and keychain refresh token), and the app reloaded, which drops what
+    // web-client's sign-out left in module state. The shell's own navigation to auth-server is refused
+    // on the Rust side, so this window never leaves the account switcher.
+    useEffect(
+        () =>
+            onShellSignOut((accountId) => {
+                removeAccount(accountId)
+                    .then(() => {
+                        unregisterAccountMailboxes(accountId);
+                        reloadApp();
+                    })
+                    .catch((err: unknown) => {
+                        setStatus({ message: describeError(err), tone: "error" });
+                    });
+            }),
+        []
     );
 
     const handleRemoveAccount = useCallback((accountId: string) => {

@@ -34,6 +34,12 @@ vi.mock("../src/lib/mailboxRegistry.js", () => ({
     unregisterAccountMailboxes: (...args: unknown[]) => unregisterAccountMailboxesMock(...args),
 }));
 
+const reloadAppMock = vi.fn();
+vi.mock("../src/lib/accountSession.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../src/lib/accountSession.js")>()),
+    reloadApp: () => reloadAppMock(),
+}));
+
 const setActiveAccountConfigMock = vi.fn();
 vi.mock("../src/lib/rapidmxShim.js", () => ({
     setActiveAccountConfig: (...args: unknown[]) => setActiveAccountConfigMock(...args),
@@ -100,6 +106,7 @@ beforeEach(() => {
     syncApiClientsMock.mockReset();
     getApiClientMock.mockReset().mockReturnValue(undefined);
     unregisterAccountMailboxesMock.mockReset();
+    reloadAppMock.mockReset();
     setActiveAccountConfigMock.mockReset();
     loadWwwShellMock.mockReset().mockResolvedValue(undefined);
     resolveWwwShellPropsMock.mockReset().mockResolvedValue({});
@@ -291,6 +298,46 @@ describe("App", () => {
         expect(await screen.findByRole("status")).toHaveTextContent("keychain locked");
     });
 
+    it("removes the account whose shell signed out, forgets its mailboxes and reloads the app", async () => {
+        listAccountsMock.mockResolvedValue([account, accountB]);
+        removeAccountMock.mockResolvedValue(undefined);
+        const { App } = await import("../src/App.js");
+        const { getActiveAccountId, notifyShellSignOut } = await import("../src/lib/accountSession.js");
+        render(<App />);
+        await screen.findByText(/Work.*user@example.com/);
+        await waitFor(() => expect(getActiveAccountId()).toBe("a1"));
+        act(() => notifyShellSignOut("a1"));
+        await waitFor(() => expect(reloadAppMock).toHaveBeenCalledTimes(1));
+        expect(removeAccountMock).toHaveBeenCalledWith("a1");
+        expect(unregisterAccountMailboxesMock).toHaveBeenCalledWith("a1");
+        // The other account is untouched.
+        expect(removeAccountMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows an error status and does not reload when removing a signed-out account fails", async () => {
+        listAccountsMock.mockResolvedValue([account]);
+        removeAccountMock.mockRejectedValue(new Error("keychain locked"));
+        const { App } = await import("../src/App.js");
+        const { notifyShellSignOut } = await import("../src/lib/accountSession.js");
+        render(<App />);
+        await screen.findByText(/Work.*user@example.com/);
+        act(() => notifyShellSignOut("a1"));
+        expect(await screen.findByRole("status")).toHaveTextContent("keychain locked");
+        expect(reloadAppMock).not.toHaveBeenCalled();
+        expect(unregisterAccountMailboxesMock).not.toHaveBeenCalled();
+    });
+
+    it("stops listening for shell sign-outs on unmount", async () => {
+        listAccountsMock.mockResolvedValue([account]);
+        const { App } = await import("../src/App.js");
+        const { notifyShellSignOut } = await import("../src/lib/accountSession.js");
+        const { unmount } = render(<App />);
+        await screen.findByText(/Work.*user@example.com/);
+        unmount();
+        notifyShellSignOut("a1");
+        expect(removeAccountMock).not.toHaveBeenCalled();
+    });
+
     it("unsubscribes both event listeners on unmount", async () => {
         const { App } = await import("../src/App.js");
         const { unmount } = render(<App />);
@@ -370,6 +417,8 @@ describe("App", () => {
         const { App } = await import("../src/App.js");
         render(<App />);
         await screen.findByText(/Work.*user@example.com/);
+        // Once the first account is active, so its shell load (not the second's) is the stale one.
+        await waitFor(() => expect(loadWwwShellMock).toHaveBeenCalledTimes(1));
         // The first account's shell load is still pending when the user switches accounts.
         fireEvent.click(screen.getByRole("button", { name: /Personal.*me@example.org/ }));
         await waitFor(() => expect(mountRouterMock).toHaveBeenCalledTimes(1));
@@ -388,6 +437,8 @@ describe("App", () => {
         await screen.findByText("No accounts signed in yet.");
         expect(screen.queryByText("Open admin console")).not.toBeInTheDocument();
         expect(screen.queryByText("Open escrow console")).not.toBeInTheDocument();
+        const { getActiveAccountId } = await import("../src/lib/accountSession.js");
+        expect(getActiveAccountId()).toBeUndefined();
     });
 
     it("opens the admin console in the system browser, built from the active account's server", async () => {

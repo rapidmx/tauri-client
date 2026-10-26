@@ -36,9 +36,11 @@
  * as a function. The fallback (a logged warning, not a throw) only runs if a future `web-client`
  * build drops that export. **It is switched off** (`NATIVE_SEARCH_TRANSPORT_READY`) until this
  * transport can complete a build pass, so web-client's own Worker/OPFS transport stays installed,
- * wrapped so its prune never deletes another signed-in account's indexes
+ * wrapped so its prune and a shell sign-out never delete another signed-in account's indexes
  * (`createMultiAccountWorkerTransport()`).
  */
+import { notifyShellSignOut } from "./accountSession.js";
+import { accountMailboxes, registerMailboxAccount } from "./mailboxRegistry.js";
 import { searchCommands, type LocalIndexEntity as RustLocalIndexEntity } from "./tauri.js";
 
 /** Mirrors `web-client`'s `apps/shared/search/localIndexWorker.ts` `GenerationParams`. */
@@ -303,49 +305,182 @@ export function createNativeSearchTransport(resolveAccountId: (mailboxUid: strin
 /**
  * Whether `installNativeSearchTransport()` replaces web-client's own Worker/OPFS transport. Off until
  * the native transport implements `pruneEntities`, `setWindow` and `setBuilding` (a build pass awaits
- * `setWindow` right after `init`) and mailboxes are registered with their accounts
- * (`mailboxRegistry.ts`): installed before then, it would replace a working transport with one that
- * can't finish a single build. WebView2 and WKWebView support Worker and OPFS, so the default works.
+ * `setWindow` right after `init`) and mailboxes are registered with their accounts before its `init`
+ * (`mailboxRegistry.ts`; only the Worker wrapper registers them today): installed before then, it
+ * would replace a working transport with one that can't finish a single build. WebView2 and WKWebView
+ * support Worker and OPFS, so the default works.
  */
 export const NATIVE_SEARCH_TRANSPORT_READY = false;
 
+/** web-client's `PENDING_DELETIONS_KEY` (`localIndexRpcClient.ts`), where its Worker transport lists the
+ * deletions a page load could not finish; `"*"` there stands for every index on the device. */
+export const DEFAULT_PENDING_DELETIONS_KEY = "rapidmx-localsearch-pending-deletions";
+const ALL_INDEXES = "*";
+
+/** Whether web-client's pending-deletions list holds a wipe of every index. */
+function pendingWipeOfEveryIndex(pendingDeletionsKey: string): boolean {
+    try {
+        const pending: unknown = JSON.parse(localStorage.getItem(pendingDeletionsKey) ?? "[]");
+        return Array.isArray(pending) && pending.includes(ALL_INDEXES);
+    } catch {
+        return false;
+    }
+}
+
+export interface MultiAccountWorkerOptions {
+    /** How many accounts are signed in (`apiClients.ts` `signedInAccountCount()`). */
+    signedInAccountCount: () => number;
+    /** The account whose shell is mounted (`accountSession.ts` `getActiveAccountId()`). */
+    activeAccountId?: () => string | undefined;
+    pendingDeletionsKey?: string;
+}
+
+/** `createMultiAccountWorkerTransport()`'s transport, which also knows which indexes it has open. */
+export interface MultiAccountWorkerTransport extends LocalIndexTransport {
+    /** Whether `mailboxUid`'s index was opened through this transport and not destroyed since. */
+    isOpen(mailboxUid: string): boolean;
+}
+
 /**
- * web-client's own Worker/OPFS `worker` transport, with `pruneInaccessible` skipped while more than one
- * account is signed in. web-client prunes with the active account's mailbox list on every mailbox-list
- * change, assuming one user per origin; here every account shares this webview's origin and so its
- * OPFS, and that prune would delete every other signed-in account's local index directories (a full
- * download-and-decrypt rebuild of a zero-access mailbox, with no full-text search until it finishes).
- * With one account signed in the prune runs as before, which is also what clears a removed account's
- * directories once only one account is left; until then they stay, still encrypted under that
- * mailbox's derived index key. The worker's prune also forgets each pruned mailbox's zero-access sync
- * state (`rapidmx:za-index-sync:`), so skipping it keeps the other accounts' sync state too, and their
- * next sync pass resumes rather than re-importing every segment.
+ * web-client's own Worker/OPFS `worker` transport, made safe for several accounts sharing this webview's
+ * origin and so its OPFS. web-client assumes one user per origin.
+ *
+ * `pruneInaccessible` (on every mailbox-list change, with the active account's list) would delete every
+ * other signed-in account's local index directories (a full download-and-decrypt rebuild of a zero-access
+ * mailbox, with no full-text search until it finishes). It runs only while exactly one account is signed
+ * in, which is also what clears a removed account's directories once only one account is left; until
+ * then they stay, still encrypted under that mailbox's derived index key. The worker's prune also forgets
+ * each pruned mailbox's zero-access sync state (`rapidmx:za-index-sync:`), so skipping it keeps the other
+ * accounts' sync state too, and their next sync pass resumes rather than re-importing every segment.
+ *
+ * `destroyAll`, which only the shell's sign-out calls, would delete every account's indexes and mark the
+ * page signed out, so no index opens again until a reload. While more than one account is signed in it
+ * destroys only the mailboxes registered to the active account (`mailboxRegistry.ts`), one by one, within
+ * the same timeout. Either way it then reports the sign-out (`accountSession.ts`), so `App.tsx` removes
+ * that account.
+ *
+ * `retryPendingDeletions` would finish an earlier load's interrupted wipe of every index, other accounts'
+ * included; while more than one account is signed in it leaves such a list for a later load.
+ *
+ * `init` and `pruneInaccessible` register the mailboxes they name to the active account, which is how a
+ * sign-out knows them.
  */
 export function createMultiAccountWorkerTransport(
     worker: LocalIndexTransport,
-    signedInAccountCount: () => number
-): LocalIndexTransport {
+    {
+        signedInAccountCount,
+        activeAccountId = () => undefined,
+        pendingDeletionsKey = DEFAULT_PENDING_DELETIONS_KEY,
+    }: MultiAccountWorkerOptions
+): MultiAccountWorkerTransport {
+    const open = new Set<string>();
+    const severalSignedIn = (): boolean => signedInAccountCount() > 1;
+    const register = (mailboxUid: string): void => {
+        const accountId = activeAccountId();
+        if (accountId) {
+            registerMailboxAccount(mailboxUid, accountId);
+        }
+    };
+
+    async function destroyAccountIndexes(accountId: string | undefined, timeoutMs: number): Promise<boolean> {
+        const mailboxUids = accountId ? accountMailboxes(accountId) : [];
+        for (const mailboxUid of mailboxUids) {
+            open.delete(mailboxUid);
+        }
+        // Each destroy never rejects, and records its own deletion for a retry when it fails.
+        const work = Promise.all(mailboxUids.map((mailboxUid) => worker.destroy(mailboxUid))).then((results) =>
+            results.every(Boolean)
+        );
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+        });
+        const result = await Promise.race([work, timeout]);
+        clearTimeout(timer);
+        return result;
+    }
+
     return {
         ...worker,
+        isOpen(mailboxUid: string): boolean {
+            return open.has(mailboxUid);
+        },
+        async init(params: InitParams): Promise<void> {
+            // Registered first, so a sign-out still finds an index whose open failed halfway.
+            register(params.mailboxUid);
+            await worker.init(params);
+            open.add(params.mailboxUid);
+        },
+        destroy(mailboxUid: string): Promise<boolean> {
+            open.delete(mailboxUid);
+            return worker.destroy(mailboxUid);
+        },
+        async destroyAll(timeoutMs: number): Promise<boolean> {
+            const accountId = activeAccountId();
+            let result: boolean;
+            if (severalSignedIn()) {
+                result = await destroyAccountIndexes(accountId, timeoutMs);
+            } else {
+                open.clear();
+                result = await worker.destroyAll(timeoutMs);
+            }
+            if (accountId) {
+                notifyShellSignOut(accountId);
+            }
+            return result;
+        },
         pruneInaccessible(accessibleMailboxUids: Iterable<string>): Promise<void> {
-            return signedInAccountCount() === 1 ? worker.pruneInaccessible(accessibleMailboxUids) : Promise.resolve();
+            const accessible = [...accessibleMailboxUids];
+            accessible.forEach(register);
+            return signedInAccountCount() === 1 ? worker.pruneInaccessible(accessible) : Promise.resolve();
+        },
+        retryPendingDeletions(): Promise<void> {
+            return severalSignedIn() && pendingWipeOfEveryIndex(pendingDeletionsKey) ? Promise.resolve() : worker.retryPendingDeletions();
         },
     };
 }
 
 /**
+ * Destroys the local index of every mailbox `isOpen` reports open the moment its keys are destroyed (spec
+ * section 11: the index MUST be destroyed on the same events that destroy private keys). web-client does
+ * this only from `LocalIndexLifecycle`, which polls while its account's mail view is mounted; an account
+ * switch unmounts it, while the next account's idle timeout (`destroyUnlockedKeys()`, every mailbox) still
+ * locks the previous account's mailboxes, whose Worker connection would otherwise keep their index key. A
+ * mounted `LocalIndexLifecycle` destroying the same index again afterwards finds nothing left to close.
+ */
+export async function watchKeyLocks(
+    isOpen: (mailboxUid: string) => boolean,
+    destroyLocalIndex: (mailboxUid: string) => unknown
+): Promise<void> {
+    const { subscribeKeySession } = await import("@rapidmx/web-client/lib/crypto/keySession.js");
+    subscribeKeySession(({ mailboxUid, state }) => {
+        if (state !== "locked" || !isOpen(mailboxUid)) {
+            return;
+        }
+        // Stop a build pass still running with the destroyed keys, as LocalIndexLifecycle does; the destroy
+        // also makes the Worker reject anything that pass still sends.
+        import("@rapidmx/web-client/shared/search/localIndexBuilder.js")
+            .then((builder: Record<string, unknown>) => (builder.cancelLocalIndexBuild as (uid: string) => void)(mailboxUid))
+            .catch(() => undefined);
+        void destroyLocalIndex(mailboxUid);
+    });
+}
+
+/**
  * Installs `web-client`'s active `LocalIndexTransport`, once, at startup, before any search UI mounts:
  * `createNativeSearchTransport()` when `enabled` (`NATIVE_SEARCH_TRANSPORT_READY` by default), and
- * otherwise web-client's own Worker/OPFS transport wrapped by `createMultiAccountWorkerTransport()`
- * (left as it is when this build exports no `workerLocalIndexTransport`). It stays defensive: a
- * missing export logs a warning rather than throwing. Never throws.
+ * otherwise web-client's own Worker/OPFS transport wrapped by `createMultiAccountWorkerTransport()`, with
+ * `watchKeyLocks()` destroying its open indexes on a lock (left as it is when this build exports no
+ * `workerLocalIndexTransport`). It stays defensive: a missing export logs a warning rather than throwing.
+ * Never throws.
  */
 export async function installNativeSearchTransport(
     resolveAccountId: (mailboxUid: string) => string | undefined,
     {
         enabled = NATIVE_SEARCH_TRANSPORT_READY,
         signedInAccountCount = () => 0,
-    }: { enabled?: boolean; signedInAccountCount?: () => number } = {}
+        activeAccountId,
+    }: { enabled?: boolean; signedInAccountCount?: () => number; activeAccountId?: () => string | undefined } = {}
 ): Promise<void> {
     try {
         const module: Record<string, unknown> = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
@@ -364,7 +499,10 @@ export async function installNativeSearchTransport(
         }
         const worker = module.workerLocalIndexTransport as LocalIndexTransport | undefined;
         if (worker) {
-            install(createMultiAccountWorkerTransport(worker, signedInAccountCount));
+            const pendingDeletionsKey = module.PENDING_DELETIONS_KEY as string | undefined;
+            const transport = createMultiAccountWorkerTransport(worker, { signedInAccountCount, activeAccountId, pendingDeletionsKey });
+            install(transport);
+            await watchKeyLocks(transport.isOpen, module.destroyLocalIndex as (mailboxUid: string) => unknown);
         }
     } catch (err) {
         console.warn("[rapidmx] Could not install the native search transport:", err);

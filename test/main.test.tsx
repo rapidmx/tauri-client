@@ -60,9 +60,14 @@ describe("src/main.tsx", () => {
 
         expect(installRapidMxShimMock).toHaveBeenCalledTimes(1);
         expect(installNativeSearchTransportMock).toHaveBeenCalledTimes(1);
-        // The Worker transport's prune is gated on how many accounts are signed in.
+        // The Worker transport's prune is gated on how many accounts are signed in,
+        // and its sign-out scoped to the active account.
         const { signedInAccountCount } = await import("../src/lib/apiClients.js");
-        expect(installNativeSearchTransportMock).toHaveBeenCalledWith(expect.any(Function), { signedInAccountCount });
+        const { getActiveAccountId } = await import("../src/lib/accountSession.js");
+        expect(installNativeSearchTransportMock).toHaveBeenCalledWith(expect.any(Function), {
+            signedInAccountCount,
+            activeAccountId: getActiveAccountId,
+        });
         expect(createRootMock).toHaveBeenCalledWith(container);
         expect(renderMock).toHaveBeenCalledTimes(1);
     });

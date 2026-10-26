@@ -15,6 +15,7 @@
 //! - `federation` - "Add account" server discovery (DNS TXT + `.well-known/rapidmx/server-info`).
 //! - `keychain` - OS-keychain refresh-token storage, one entry per account.
 //! - `menu` - desktop-only application menu (not compiled/used on mobile).
+//! - `navigation` - keeps the webview on this app's own pages (refuses web-client's sign-out redirect).
 //! - `oauth` - the OAuth2/PKCE sign-in flow itself.
 //! - `search` - the native Tier 2 FTS5 local index (in-memory SQLite, libsodium-XChaCha20-Poly1305
 //!   encrypted at rest), one database per account.
@@ -28,6 +29,7 @@ pub mod federation;
 pub mod keychain;
 #[cfg(desktop)]
 pub mod menu;
+pub mod navigation;
 pub mod oauth;
 pub mod search;
 
@@ -45,6 +47,7 @@ pub fn run() {
         focus_main_window(app);
     }));
     builder
+        .plugin(navigation::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_secure_keystore::init())

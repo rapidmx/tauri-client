@@ -30,9 +30,12 @@ vi.mock("../../src/lib/tauri.js", () => ({
     },
 }));
 
+import { onShellSignOut } from "../../src/lib/accountSession.js";
+import { __resetMailboxRegistryForTests, registerMailboxAccount, resolveMailboxAccount } from "../../src/lib/mailboxRegistry.js";
 import {
     createMultiAccountWorkerTransport,
     createNativeSearchTransport,
+    DEFAULT_PENDING_DELETIONS_KEY,
     installNativeSearchTransport,
     NATIVE_SEARCH_TRANSPORT_READY,
     type LocalIndexTransport,
@@ -191,13 +194,35 @@ describe("createMultiAccountWorkerTransport", () => {
     const worker = (): LocalIndexTransport =>
         ({
             nextGeneration: vi.fn(() => 7),
+            init: vi.fn(() => Promise.resolve()),
+            destroy: vi.fn(() => Promise.resolve(true)),
+            destroyAll: vi.fn(() => Promise.resolve(true)),
             pruneInaccessible: vi.fn(() => Promise.resolve()),
+            retryPendingDeletions: vi.fn(() => Promise.resolve()),
         }) as unknown as LocalIndexTransport;
+    const key = new Uint8Array([1]);
+    let active: string | undefined;
+    const activeAccountId = (): string | undefined => active;
+    let signedOut: string[];
+    let unsubscribe: () => void;
+
+    beforeEach(() => {
+        localStorage.clear();
+        __resetMailboxRegistryForTests();
+        active = "acct-a";
+        signedOut = [];
+        unsubscribe = onShellSignOut((accountId) => signedOut.push(accountId));
+    });
+
+    afterEach(() => {
+        unsubscribe();
+        vi.useRealTimers();
+    });
 
     it("prunes through the worker transport while exactly one account is signed in", async () => {
         const inner = worker();
-        const transport = createMultiAccountWorkerTransport(inner, () => 1);
-        await expect(transport.pruneInaccessible(["mb-1"])).resolves.toBeUndefined();
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 1 });
+        await expect(transport.pruneInaccessible(new Set(["mb-1"]))).resolves.toBeUndefined();
         expect(inner.pruneInaccessible).toHaveBeenCalledWith(["mb-1"]);
         // Every other method is the worker transport's own.
         expect(transport.nextGeneration()).toBe(7);
@@ -205,9 +230,189 @@ describe("createMultiAccountWorkerTransport", () => {
 
     it.each([2, 0])("skips the prune, so other accounts' indexes stay, with %i accounts signed in", async (count) => {
         const inner = worker();
-        const transport = createMultiAccountWorkerTransport(inner, () => count);
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => count });
         await expect(transport.pruneInaccessible(["mb-1"])).resolves.toBeUndefined();
         expect(inner.pruneInaccessible).not.toHaveBeenCalled();
+    });
+
+    it("registers the mailboxes the active account opens or lists, and tracks which indexes are open", async () => {
+        const inner = worker();
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        await transport.init({ mailboxUid: "mb-1", indexKey: key });
+        expect(inner.init).toHaveBeenCalledWith({ mailboxUid: "mb-1", indexKey: key });
+        await transport.pruneInaccessible(["mb-1", "mb-shared"]);
+        active = "acct-b";
+        await transport.init({ mailboxUid: "mb-2", indexKey: key });
+        expect(resolveMailboxAccount("mb-1")).toBe("acct-a");
+        expect(resolveMailboxAccount("mb-shared")).toBe("acct-a");
+        expect(resolveMailboxAccount("mb-2")).toBe("acct-b");
+        expect(transport.isOpen("mb-1")).toBe(true);
+        expect(transport.isOpen("mb-shared")).toBe(false);
+
+        await expect(transport.destroy("mb-1")).resolves.toBe(true);
+        expect(inner.destroy).toHaveBeenCalledWith("mb-1");
+        expect(transport.isOpen("mb-1")).toBe(false);
+    });
+
+    it("registers a mailbox whose open fails, but doesn't count it open", async () => {
+        const inner = worker();
+        vi.mocked(inner.init).mockRejectedValueOnce(new Error("OPFS busy"));
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        await expect(transport.init({ mailboxUid: "mb-1", indexKey: key })).rejects.toThrow("OPFS busy");
+        expect(resolveMailboxAccount("mb-1")).toBe("acct-a");
+        expect(transport.isOpen("mb-1")).toBe(false);
+    });
+
+    it("registers nothing while no account is active", async () => {
+        const transport = createMultiAccountWorkerTransport(worker(), { signedInAccountCount: () => 2 });
+        await transport.init({ mailboxUid: "mb-1", indexKey: key });
+        await transport.pruneInaccessible(["mb-2"]);
+        expect(resolveMailboxAccount("mb-1")).toBeUndefined();
+        expect(resolveMailboxAccount("mb-2")).toBeUndefined();
+    });
+
+    it("signs out with several accounts by destroying only the active account's indexes, then reports it", async () => {
+        const inner = worker();
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        await transport.init({ mailboxUid: "mb-a1", indexKey: key });
+        registerMailboxAccount("mb-a2", "acct-a");
+        active = "acct-b";
+        await transport.init({ mailboxUid: "mb-b1", indexKey: key });
+        active = "acct-a";
+
+        await expect(transport.destroyAll(3000)).resolves.toBe(true);
+        expect(inner.destroyAll).not.toHaveBeenCalled();
+        expect(vi.mocked(inner.destroy).mock.calls.map(([uid]) => uid).sort()).toEqual(["mb-a1", "mb-a2"]);
+        expect(transport.isOpen("mb-a1")).toBe(false);
+        expect(transport.isOpen("mb-b1")).toBe(true);
+        expect(signedOut).toEqual(["acct-a"]);
+    });
+
+    it("reports a failed destroy of one of the active account's indexes", async () => {
+        const inner = worker();
+        vi.mocked(inner.destroy).mockResolvedValueOnce(false);
+        registerMailboxAccount("mb-a1", "acct-a");
+        registerMailboxAccount("mb-a2", "acct-a");
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 3, activeAccountId });
+        await expect(transport.destroyAll(3000)).resolves.toBe(false);
+        expect(signedOut).toEqual(["acct-a"]);
+    });
+
+    it("stops waiting for the active account's destroys at the timeout", async () => {
+        vi.useFakeTimers();
+        const inner = worker();
+        vi.mocked(inner.destroy).mockReturnValue(new Promise<boolean>(() => undefined));
+        registerMailboxAccount("mb-a1", "acct-a");
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        const result = transport.destroyAll(3000);
+        await vi.advanceTimersByTimeAsync(3000);
+        await expect(result).resolves.toBe(false);
+        expect(signedOut).toEqual(["acct-a"]);
+    });
+
+    it("destroys nothing and reports nothing when several accounts are signed in but none is active", async () => {
+        const inner = worker();
+        registerMailboxAccount("mb-a1", "acct-a");
+        active = undefined;
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        await expect(transport.destroyAll(3000)).resolves.toBe(true);
+        expect(inner.destroy).not.toHaveBeenCalled();
+        expect(inner.destroyAll).not.toHaveBeenCalled();
+        expect(signedOut).toEqual([]);
+    });
+
+    it("signs out with one account through the worker's own wipe of every index, then reports it", async () => {
+        const inner = worker();
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 1, activeAccountId });
+        await transport.init({ mailboxUid: "mb-a1", indexKey: key });
+        await expect(transport.destroyAll(3000)).resolves.toBe(true);
+        expect(inner.destroyAll).toHaveBeenCalledWith(3000);
+        expect(inner.destroy).not.toHaveBeenCalled();
+        expect(transport.isOpen("mb-a1")).toBe(false);
+        expect(signedOut).toEqual(["acct-a"]);
+    });
+
+    it("holds back a pending wipe of every index while several accounts are signed in", async () => {
+        const inner = worker();
+        let count = 2;
+        const transport = createMultiAccountWorkerTransport(inner, {
+            signedInAccountCount: () => count,
+            pendingDeletionsKey: "pending",
+        });
+        localStorage.setItem("pending", JSON.stringify(["*"]));
+        await expect(transport.retryPendingDeletions()).resolves.toBeUndefined();
+        expect(inner.retryPendingDeletions).not.toHaveBeenCalled();
+
+        count = 1;
+        await transport.retryPendingDeletions();
+        expect(inner.retryPendingDeletions).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([[JSON.stringify(["mb-1"])], [null], ["not json"], ['{"0":"*"}']])(
+        "retries other pending deletions with several accounts signed in (%s)",
+        async (pending) => {
+            const inner = worker();
+            if (pending !== null) {
+                localStorage.setItem(DEFAULT_PENDING_DELETIONS_KEY, pending);
+            }
+            const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2 });
+            await transport.retryPendingDeletions();
+            expect(inner.retryPendingDeletions).toHaveBeenCalledTimes(1);
+        }
+    );
+});
+
+describe("watchKeyLocks", () => {
+    const keySessionPath = "@rapidmx/web-client/lib/crypto/keySession.js";
+    const builderPath = "@rapidmx/web-client/shared/search/localIndexBuilder.js";
+    let listener: ((event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) | undefined;
+    const cancelLocalIndexBuild = vi.fn();
+
+    beforeEach(() => {
+        vi.resetModules();
+        listener = undefined;
+        cancelLocalIndexBuild.mockReset();
+        vi.doMock(keySessionPath, () => ({
+            subscribeKeySession: (subscriber: typeof listener) => {
+                listener = subscriber;
+                return () => undefined;
+            },
+        }));
+        vi.doMock(builderPath, () => ({ cancelLocalIndexBuild }));
+    });
+
+    afterEach(() => {
+        vi.doUnmock(keySessionPath);
+        vi.doUnmock(builderPath);
+    });
+
+    it("cancels the build and destroys the index of an open mailbox whose keys are destroyed", async () => {
+        const { watchKeyLocks: watch } = await import("../../src/lib/searchTransport.js");
+        const destroyLocalIndex = vi.fn();
+        await watch((uid) => uid === "mb-open", destroyLocalIndex);
+        listener!({ mailboxUid: "mb-open", state: "locked" });
+        expect(destroyLocalIndex).toHaveBeenCalledWith("mb-open");
+        await vi.waitFor(() => expect(cancelLocalIndexBuild).toHaveBeenCalledWith("mb-open"));
+    });
+
+    it("ignores an unlock, and a lock of a mailbox with no open index", async () => {
+        const { watchKeyLocks: watch } = await import("../../src/lib/searchTransport.js");
+        const destroyLocalIndex = vi.fn();
+        await watch((uid) => uid === "mb-open", destroyLocalIndex);
+        listener!({ mailboxUid: "mb-open", state: "unlocked" });
+        listener!({ mailboxUid: "mb-closed", state: "locked" });
+        expect(destroyLocalIndex).not.toHaveBeenCalled();
+    });
+
+    it("still destroys the index when the builder can't be loaded", async () => {
+        vi.doMock(builderPath, () => {
+            throw new Error("offline");
+        });
+        const { watchKeyLocks: watch } = await import("../../src/lib/searchTransport.js");
+        const destroyLocalIndex = vi.fn();
+        await watch(() => true, destroyLocalIndex);
+        listener!({ mailboxUid: "mb-open", state: "locked" });
+        expect(destroyLocalIndex).toHaveBeenCalledWith("mb-open");
     });
 });
 
@@ -230,7 +435,7 @@ describe("installNativeSearchTransport", () => {
         const setLocalIndexTransport = vi.fn();
         const workerPrune = vi.fn(() => Promise.resolve());
         const workerLocalIndexTransport = { search: vi.fn(), pruneInaccessible: workerPrune };
-        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport }));
+        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport, destroyLocalIndex: vi.fn(), PENDING_DELETIONS_KEY: undefined }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
         let accounts = 2;
         await expect(install(resolver, { signedInAccountCount: () => accounts })).resolves.toBeUndefined();
@@ -245,10 +450,55 @@ describe("installNativeSearchTransport", () => {
         expect(warnSpy).not.toHaveBeenCalled();
     });
 
+    it("destroys an index the installed transport opened once its keys are destroyed, and holds back a wipe pending under web-client's key", async () => {
+        const keySessionPath = "@rapidmx/web-client/lib/crypto/keySession.js";
+        let listener: ((event: { mailboxUid: string; state: "locked" | "unlocked" }) => void) | undefined;
+        vi.doMock(keySessionPath, () => ({
+            subscribeKeySession: (subscriber: typeof listener) => {
+                listener = subscriber;
+                return () => undefined;
+            },
+        }));
+        try {
+            const setLocalIndexTransport = vi.fn();
+            const destroyLocalIndex = vi.fn();
+            const workerLocalIndexTransport = {
+                init: vi.fn(() => Promise.resolve()),
+                retryPendingDeletions: vi.fn(() => Promise.resolve()),
+            };
+            vi.doMock(modulePath, () => ({
+                setLocalIndexTransport,
+                workerLocalIndexTransport,
+                destroyLocalIndex,
+                PENDING_DELETIONS_KEY: "web-client-pending",
+            }));
+            const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+            await install(resolver, { signedInAccountCount: () => 2 });
+            const installed = setLocalIndexTransport.mock.calls[0][0] as LocalIndexTransport;
+            await installed.init({ mailboxUid: "mb-1", indexKey: new Uint8Array([1]) });
+            listener!({ mailboxUid: "mb-2", state: "locked" });
+            expect(destroyLocalIndex).not.toHaveBeenCalled();
+            listener!({ mailboxUid: "mb-1", state: "locked" });
+            expect(destroyLocalIndex).toHaveBeenCalledWith("mb-1");
+
+            localStorage.setItem("web-client-pending", JSON.stringify(["*"]));
+            await installed.retryPendingDeletions();
+            expect(workerLocalIndexTransport.retryPendingDeletions).not.toHaveBeenCalled();
+        } finally {
+            localStorage.clear();
+            vi.doUnmock(keySessionPath);
+        }
+    });
+
     it("never prunes when no account count is supplied", async () => {
         const setLocalIndexTransport = vi.fn();
         const workerPrune = vi.fn(() => Promise.resolve());
-        vi.doMock(modulePath, () => ({ setLocalIndexTransport, workerLocalIndexTransport: { pruneInaccessible: workerPrune } }));
+        vi.doMock(modulePath, () => ({
+            setLocalIndexTransport,
+            workerLocalIndexTransport: { pruneInaccessible: workerPrune },
+            destroyLocalIndex: vi.fn(),
+            PENDING_DELETIONS_KEY: undefined,
+        }));
         const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
         await install(resolver);
         await (setLocalIndexTransport.mock.calls[0][0] as LocalIndexTransport).pruneInaccessible(["mb-1"]);
@@ -305,6 +555,33 @@ describe("installNativeSearchTransport with web-client's real Worker transport",
     beforeEach(() => {
         vi.resetModules();
         localStorage.clear();
+    });
+
+    it("signs out one of several accounts by destroying only its registered indexes, without wiping every index or closing the others", async () => {
+        const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+        const rpc = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
+        const registry = await import("../../src/lib/mailboxRegistry.js");
+        const session = await import("../../src/lib/accountSession.js");
+        registry.__resetMailboxRegistryForTests();
+        registry.registerMailboxAccount("mine", "acct-a");
+        registry.registerMailboxAccount("other-account", "acct-b");
+        session.recordActiveAccount("acct-a");
+        const signedOut = vi.fn();
+        const unsubscribe = session.onShellSignOut(signedOut);
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        await install(resolver, { signedInAccountCount: () => 2, activeAccountId: session.getActiveAccountId });
+        try {
+            await rpc.destroyAllLocalIndexes(1000);
+            // No Worker in jsdom, so the destroy is left pending for the next load - for this account's
+            // mailbox only, never as a wipe of every index on the device.
+            expect(JSON.parse(localStorage.getItem(rpc.PENDING_DELETIONS_KEY)!)).toEqual(["mine"]);
+            expect(signedOut).toHaveBeenCalledWith("acct-a");
+        } finally {
+            unsubscribe();
+            warn.mockRestore();
+            session.recordActiveAccount(undefined);
+            rpc.setLocalIndexTransport(rpc.workerLocalIndexTransport);
+        }
     });
 
     it("keeps another signed-in account's zero-access sync state through its mail view's prune, and forgets it once one account is left", async () => {

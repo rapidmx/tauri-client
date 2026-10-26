@@ -5,6 +5,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
+import { getActiveAccountId } from "./lib/accountSession.js";
 import { signedInAccountCount } from "./lib/apiClients.js";
 import { installRapidMxShim } from "./lib/rapidmxShim.js";
 import { resolveMailboxAccount } from "./lib/mailboxRegistry.js";
@@ -20,9 +21,9 @@ installRapidMxShim();
 
 // Same "before any search UI mounts" requirement for the local-search transport. Until
 // `NATIVE_SEARCH_TRANSPORT_READY` (`src/lib/searchTransport.ts`) is switched on, this keeps
-// web-client's own Worker/OPFS transport, only holding back its prune of other mailboxes' indexes
-// while several accounts share this webview's storage.
-void installNativeSearchTransport(resolveMailboxAccount, { signedInAccountCount });
+// web-client's own Worker/OPFS transport, holding back its prune of other mailboxes' indexes and
+// scoping a sign-out's wipe to the active account while several accounts share this webview's storage.
+void installNativeSearchTransport(resolveMailboxAccount, { signedInAccountCount, activeAccountId: getActiveAccountId });
 
 const container = document.getElementById("root");
 if (!container) {
