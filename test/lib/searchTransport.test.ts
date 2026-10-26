@@ -298,3 +298,32 @@ describe("installNativeSearchTransport", () => {
         expect(warnSpy).toHaveBeenCalledWith("[rapidmx] Could not install the native search transport:", expect.any(Error));
     });
 });
+
+describe("installNativeSearchTransport with web-client's real Worker transport", () => {
+    const syncKey = (mailboxUid: string): string => `rapidmx:za-index-sync:${mailboxUid}`;
+
+    beforeEach(() => {
+        vi.resetModules();
+        localStorage.clear();
+    });
+
+    it("keeps another signed-in account's zero-access sync state through its mail view's prune, and forgets it once one account is left", async () => {
+        const { installNativeSearchTransport: install } = await import("../../src/lib/searchTransport.js");
+        const rpc = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
+        let accounts = 2;
+        await install(resolver, { signedInAccountCount: () => accounts });
+        try {
+            localStorage.setItem(syncKey("mine"), "{}");
+            localStorage.setItem(syncKey("other-account"), "{}");
+            await rpc.pruneInaccessibleLocalIndexes(["mine"]);
+            expect(localStorage.getItem(syncKey("other-account"))).toBe("{}");
+
+            accounts = 1;
+            await rpc.pruneInaccessibleLocalIndexes(["mine"]);
+            expect(localStorage.getItem(syncKey("mine"))).toBe("{}");
+            expect(localStorage.getItem(syncKey("other-account"))).toBeNull();
+        } finally {
+            rpc.setLocalIndexTransport(rpc.workerLocalIndexTransport);
+        }
+    });
+});

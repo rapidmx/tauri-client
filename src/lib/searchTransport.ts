@@ -317,7 +317,9 @@ export const NATIVE_SEARCH_TRANSPORT_READY = false;
  * download-and-decrypt rebuild of a zero-access mailbox, with no full-text search until it finishes).
  * With one account signed in the prune runs as before, which is also what clears a removed account's
  * directories once only one account is left; until then they stay, still encrypted under that
- * mailbox's derived index key.
+ * mailbox's derived index key. The worker's prune also forgets each pruned mailbox's zero-access sync
+ * state (`rapidmx:za-index-sync:`), so skipping it keeps the other accounts' sync state too, and their
+ * next sync pass resumes rather than re-importing every segment.
  */
 export function createMultiAccountWorkerTransport(
     worker: LocalIndexTransport,
