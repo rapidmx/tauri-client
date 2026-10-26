@@ -30,7 +30,12 @@ vi.mock("../../src/lib/tauri.js", () => ({
     },
 }));
 
-import { __resetMailboxRegistryForTests, registerMailboxAccount, resolveMailboxAccount } from "../../src/lib/mailboxRegistry.js";
+import {
+    __resetMailboxRegistryForTests,
+    recordPersonalUnlock,
+    registerMailboxAccount,
+    resolveMailboxAccount,
+} from "../../src/lib/mailboxRegistry.js";
 import {
     createMultiAccountWorkerTransport,
     createNativeSearchTransport,
@@ -275,6 +280,32 @@ describe("createMultiAccountWorkerTransport", () => {
         expect(vi.mocked(inner.destroy).mock.calls.map(([uid]) => uid).sort()).toEqual(["mb-a1", "mb-a2"]);
     });
 
+    it("keeps a mailbox another signed-in account also reaches, unless the active account unlocked it itself", async () => {
+        const inner = worker();
+        registerMailboxAccount("mb-listed", "acct-a");
+        registerMailboxAccount("mb-listed", "acct-b");
+        recordPersonalUnlock("mb-owned", "acct-a");
+        registerMailboxAccount("mb-owned", "acct-b");
+        registerMailboxAccount("mb-stale", "acct-a");
+        registerMailboxAccount("mb-stale", "acct-gone");
+        const transport = createMultiAccountWorkerTransport(inner, {
+            signedInAccountCount: () => 2,
+            activeAccountId,
+            isSignedIn: (accountId) => accountId !== "acct-gone",
+        });
+        await expect(transport.destroyAll(3000)).resolves.toBe(true);
+        expect(vi.mocked(inner.destroy).mock.calls.map(([uid]) => uid).sort()).toEqual(["mb-owned", "mb-stale"]);
+    });
+
+    it("counts every registered account as signed in when it isn't told which are", async () => {
+        const inner = worker();
+        registerMailboxAccount("mb-stale", "acct-a");
+        registerMailboxAccount("mb-stale", "acct-gone");
+        const transport = createMultiAccountWorkerTransport(inner, { signedInAccountCount: () => 2, activeAccountId });
+        await expect(transport.destroyAll(3000)).resolves.toBe(true);
+        expect(inner.destroy).not.toHaveBeenCalled();
+    });
+
     it("reports a failed destroy of one of the active account's indexes", async () => {
         const inner = worker();
         vi.mocked(inner.destroy).mockResolvedValueOnce(false);
@@ -356,12 +387,33 @@ describe("registerUnlockedMailboxes", () => {
                 listener = subscriber;
                 return () => undefined;
             },
+            getUnlockedKeys: (mailboxUid: string) => (mailboxUid.startsWith("shared") ? { shared: true } : mailboxUid === "gone" ? undefined : {}),
         }));
     });
 
     afterEach(() => {
         vi.doUnmock(keySessionPath);
         localStorage.clear();
+    });
+
+    it("records a mailbox unlocked with its own keys as the active account's own unlock, and a shared one as only listed", async () => {
+        const { registerUnlockedMailboxes } = await import("../../src/lib/searchTransport.js");
+        const registry = await import("../../src/lib/mailboxRegistry.js");
+        registry.__resetMailboxRegistryForTests();
+        let active = "acct-a";
+        registerUnlockedMailboxes(() => active);
+        listener!({ mailboxUid: "own", state: "unlocked" });
+        listener!({ mailboxUid: "gone", state: "unlocked" });
+        active = "acct-b";
+        listener!({ mailboxUid: "own", state: "unlocked" });
+        listener!({ mailboxUid: "shared-1", state: "unlocked" });
+        listener!({ mailboxUid: "own", state: "unlocked" });
+        expect(registry.resolveMailboxAccount("own")).toBe("acct-b");
+        expect(registry.accountMailboxes("acct-a")).toEqual(["own", "gone"]);
+        expect(registry.releasedBySignOut("shared-1", "acct-b", () => true)).toBe(true);
+        registry.registerMailboxAccount("shared-1", "acct-a");
+        expect(registry.releasedBySignOut("shared-1", "acct-b", () => true)).toBe(false);
+        expect(registry.releasedBySignOut("own", "acct-b", () => true)).toBe(true);
     });
 
     it("registers a mailbox unlocked while an account is active to that account, and nothing else", async () => {
@@ -422,6 +474,7 @@ describe("installNativeSearchTransport", () => {
                 listener = subscriber;
                 return () => undefined;
             },
+            getUnlockedKeys: () => undefined,
         }));
         try {
             const setLocalIndexTransport = vi.fn();
@@ -533,8 +586,10 @@ describe("installNativeSearchTransport with web-client's real Worker transport",
         try {
             localStorage.setItem(syncKey("mine"), "{}");
             localStorage.setItem(syncKey("other-account"), "{}");
-            const host = session.createShellSignOutHost("acct-a", () => 2);
+            const host = session.createShellSignOutHost("acct-a", () => ["acct-a", "acct-b"]);
             host.destroyKeys();
+            // A switch to the other account while the sign-out waits on its compose windows changes nothing.
+            session.recordActiveAccount("acct-b");
             await host.finish();
             // No Worker in jsdom, so the destroy is left pending for the next load - for this account's
             // mailbox only, never as a wipe of every index on the device - and only its sync state goes.
@@ -542,6 +597,7 @@ describe("installNativeSearchTransport with web-client's real Worker transport",
             expect(localStorage.getItem(syncKey("mine"))).toBeNull();
             expect(localStorage.getItem(syncKey("other-account"))).toBe("{}");
             expect(signedOut).toHaveBeenCalledWith("acct-a");
+            expect(registry.accountMailboxes("acct-b")).toEqual(["other-account"]);
         } finally {
             unsubscribe();
             warn.mockRestore();

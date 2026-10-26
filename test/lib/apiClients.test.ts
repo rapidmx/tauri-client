@@ -95,11 +95,16 @@ describe("apiClients", () => {
     });
 
     it("counts every synced, still signed-in account", async () => {
-        const { signedInAccountCount, syncApiClients } = await import("../../src/lib/apiClients.js");
+        const { isSignedInAccount, signedInAccountCount, signedInAccountIds, syncApiClients } = await import("../../src/lib/apiClients.js");
         expect(signedInAccountCount()).toBe(0);
+        expect(signedInAccountIds()).toEqual([]);
         syncApiClients([accountA, accountB]);
         expect(signedInAccountCount()).toBe(2);
+        expect(signedInAccountIds()).toEqual(["a1", "b2"]);
         syncApiClients([accountB]);
         expect(signedInAccountCount()).toBe(1);
+        expect(signedInAccountIds()).toEqual(["b2"]);
+        expect(isSignedInAccount("b2")).toBe(true);
+        expect(isSignedInAccount("a1")).toBe(false);
     });
 });

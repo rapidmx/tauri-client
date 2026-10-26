@@ -39,8 +39,8 @@
  * wrapped so its prune and a shell sign-out never delete another signed-in account's indexes
  * (`createMultiAccountWorkerTransport()`).
  */
-import { subscribeKeySession } from "@rapidmx/web-client/lib/crypto/keySession.js";
-import { accountMailboxes, registerMailboxAccount } from "./mailboxRegistry.js";
+import { getUnlockedKeys, subscribeKeySession } from "@rapidmx/web-client/lib/crypto/keySession.js";
+import { recordPersonalUnlock, registerMailboxAccount, releasedAccountMailboxes } from "./mailboxRegistry.js";
 import { searchCommands, type LocalIndexEntity as RustLocalIndexEntity } from "./tauri.js";
 
 /** Mirrors `web-client`'s `apps/shared/search/localIndexWorker.ts` `GenerationParams`. */
@@ -332,7 +332,30 @@ export interface MultiAccountWorkerOptions {
     signedInAccountCount: () => number;
     /** The account whose shell is mounted (`accountSession.ts` `getActiveAccountId()`). */
     activeAccountId?: () => string | undefined;
+    /** Whether an account is still signed in (`apiClients.ts` `isSignedInAccount()`). Without it, every account
+     * registered for a mailbox counts, so a scoped destroy keeps more rather than less. */
+    isSignedIn?: (accountId: string) => boolean;
     pendingDeletionsKey?: string;
+}
+
+/**
+ * Destroys `mailboxUids`' local indexes through `destroy`, all at once, and resolves `true` when every one
+ * was removed within `timeoutMs`, `false` on a failure or at the timeout. Never rejects, as long as
+ * `destroy` never does (web-client's never do; each records its own deletion for a retry when it fails).
+ */
+export async function destroyIndexesWithin(
+    mailboxUids: string[],
+    destroy: (mailboxUid: string) => Promise<boolean>,
+    timeoutMs: number
+): Promise<boolean> {
+    const work = Promise.all(mailboxUids.map((mailboxUid) => destroy(mailboxUid))).then((results) => results.every(Boolean));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    const result = await Promise.race([work, timeout]);
+    clearTimeout(timer);
+    return result;
 }
 
 /**
@@ -347,11 +370,12 @@ export interface MultiAccountWorkerOptions {
  * each pruned mailbox's zero-access sync state (`rapidmx:za-index-sync:`), so skipping it keeps the other
  * accounts' sync state too, and their next sync pass resumes rather than re-importing every segment.
  *
- * `destroyAll`, which only a sign-out calls (the shell's `signOutHost`, `accountSession.ts`), would delete
- * every account's indexes and mark the page signed out, so no index opens again until a reload. While
- * more than one account is signed in it destroys only the mailboxes registered to the active account
- * (`mailboxRegistry.ts`), one by one, within the same timeout; the worker's own destroy forgets each
- * one's zero-access sync state with it.
+ * `destroyAll` would delete every account's indexes and mark the page signed out, so no index opens again
+ * until a reload. A sign-out (`accountSession.ts`) calls it only once one account is left, and otherwise
+ * destroys the signing-out account's mailboxes one by one, naming that account. Should anything else call
+ * it while more than one account is signed in, it destroys only the mailboxes the active account's sign-out
+ * would release (`mailboxRegistry.ts` `releasedAccountMailboxes()`), one by one, within the same timeout;
+ * the worker's own destroy forgets each one's zero-access sync state with it.
  *
  * `retryPendingDeletions` would finish an earlier load's interrupted wipe of every index, other accounts'
  * included; while more than one account is signed in it leaves such a list for a later load.
@@ -364,6 +388,7 @@ export function createMultiAccountWorkerTransport(
     {
         signedInAccountCount,
         activeAccountId = () => undefined,
+        isSignedIn = () => true,
         pendingDeletionsKey = DEFAULT_PENDING_DELETIONS_KEY,
     }: MultiAccountWorkerOptions
 ): LocalIndexTransport {
@@ -375,21 +400,6 @@ export function createMultiAccountWorkerTransport(
         }
     };
 
-    async function destroyAccountIndexes(accountId: string | undefined, timeoutMs: number): Promise<boolean> {
-        const mailboxUids = accountId ? accountMailboxes(accountId) : [];
-        // Each destroy never rejects, and records its own deletion for a retry when it fails.
-        const work = Promise.all(mailboxUids.map((mailboxUid) => worker.destroy(mailboxUid))).then((results) =>
-            results.every(Boolean)
-        );
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(false), timeoutMs);
-        });
-        const result = await Promise.race([work, timeout]);
-        clearTimeout(timer);
-        return result;
-    }
-
     return {
         ...worker,
         init(params: InitParams): Promise<void> {
@@ -398,7 +408,12 @@ export function createMultiAccountWorkerTransport(
             return worker.init(params);
         },
         destroyAll(timeoutMs: number): Promise<boolean> {
-            return severalSignedIn() ? destroyAccountIndexes(activeAccountId(), timeoutMs) : worker.destroyAll(timeoutMs);
+            if (!severalSignedIn()) {
+                return worker.destroyAll(timeoutMs);
+            }
+            const accountId = activeAccountId();
+            const mailboxUids = accountId ? releasedAccountMailboxes(accountId, isSignedIn) : [];
+            return destroyIndexesWithin(mailboxUids, (mailboxUid) => worker.destroy(mailboxUid), timeoutMs);
         },
         pruneInaccessible(accessibleMailboxUids: Iterable<string>): Promise<void> {
             const accessible = [...accessibleMailboxUids];
@@ -414,14 +429,22 @@ export function createMultiAccountWorkerTransport(
 /**
  * Registers each mailbox unlocked while an account's shell is mounted to that account
  * (`mailboxRegistry.ts`), so a sign-out (`accountSession.ts` `createShellSignOutHost()`) destroys the keys
- * of a mailbox it unlocked but never opened an index for or listed. web-client itself destroys a mailbox's
- * open local index the moment its keys are destroyed (`localIndexRpcClient.ts`), whichever shell is mounted.
+ * of a mailbox it unlocked but never opened an index for or listed. One unlocked with its own keys (not a
+ * shared session opened through member key wraps) is recorded as that account's personal unlock, so its
+ * sign-out takes it even while another signed-in account lists the mailbox too. web-client itself destroys a
+ * mailbox's open local index the moment its keys are destroyed (`localIndexRpcClient.ts`), whichever shell is
+ * mounted.
  */
 export function registerUnlockedMailboxes(activeAccountId: () => string | undefined): void {
     subscribeKeySession(({ mailboxUid, state }) => {
         const accountId = activeAccountId();
-        if (state === "unlocked" && accountId) {
+        if (state !== "unlocked" || !accountId) {
+            return;
+        }
+        if (getUnlockedKeys(mailboxUid)?.shared) {
             registerMailboxAccount(mailboxUid, accountId);
+        } else {
+            recordPersonalUnlock(mailboxUid, accountId);
         }
     });
 }
@@ -440,7 +463,13 @@ export async function installNativeSearchTransport(
         enabled = NATIVE_SEARCH_TRANSPORT_READY,
         signedInAccountCount = () => 0,
         activeAccountId,
-    }: { enabled?: boolean; signedInAccountCount?: () => number; activeAccountId?: () => string | undefined } = {}
+        isSignedIn,
+    }: {
+        enabled?: boolean;
+        signedInAccountCount?: () => number;
+        activeAccountId?: () => string | undefined;
+        isSignedIn?: (accountId: string) => boolean;
+    } = {}
 ): Promise<void> {
     try {
         const module: Record<string, unknown> = await import("@rapidmx/web-client/shared/search/localIndexRpcClient.js");
@@ -463,7 +492,7 @@ export async function installNativeSearchTransport(
         const worker = module.workerLocalIndexTransport as LocalIndexTransport | undefined;
         if (worker) {
             const pendingDeletionsKey = module.PENDING_DELETIONS_KEY as string | undefined;
-            install(createMultiAccountWorkerTransport(worker, { signedInAccountCount, activeAccountId, pendingDeletionsKey }));
+            install(createMultiAccountWorkerTransport(worker, { signedInAccountCount, activeAccountId, isSignedIn, pendingDeletionsKey }));
         }
     } catch (err) {
         console.warn("[rapidmx] Could not install the native search transport:", err);

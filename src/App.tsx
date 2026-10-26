@@ -26,13 +26,14 @@
  *
  * The shell's own "Sign out" signs out only the active account, through the `signOutHost` each mount passes
  * the shell: its keys and local indexes are destroyed (not the other accounts'), the account is removed, and
- * the app reloads (`src/lib/accountSession.ts`).
+ * the app reloads (`src/lib/accountSession.ts`). The sidebar's "Remove" destroys the same keys and indexes
+ * before it removes an account.
  */
 import { useCallback, useEffect, useState } from "react";
 import { mountRouter } from "@rapidrest/react/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { createShellSignOutHost, onShellSignOut, reloadApp, recordActiveAccount } from "./lib/accountSession.js";
-import { getApiClient, signedInAccountCount, syncApiClients } from "./lib/apiClients.js";
+import { createShellSignOutHost, onShellSignOut, reloadApp, recordActiveAccount, signOutAccountLocally } from "./lib/accountSession.js";
+import { getApiClient, signedInAccountIds, syncApiClients } from "./lib/apiClients.js";
 import { unregisterAccountMailboxes } from "./lib/mailboxRegistry.js";
 import { createMountScope } from "./lib/mountScope.js";
 import { setActiveAccountConfig } from "./lib/rapidmxShim.js";
@@ -123,7 +124,7 @@ export function App(): React.JSX.Element {
         const scope = createMountScope();
         const account = activeAccount;
         // One per mount, so the shell's props keep the same object across its navigations.
-        const signOutHost = createShellSignOutHost(account.id, signedInAccountCount);
+        const signOutHost = createShellSignOutHost(account.id, signedInAccountIds);
         void (async () => {
             const shell = await loadWwwShell();
             if (scope.signal.aborted) {
@@ -186,11 +187,19 @@ export function App(): React.JSX.Element {
         []
     );
 
+    // "Remove" signs the account out as its shell's "Sign out" does: its keys and local indexes go first, while its
+    // mailbox registrations still name them, then its record and keychain refresh token. Removing the last account
+    // wipes every index, which leaves web-client's index client signed out until a reload, so that reloads too.
     const handleRemoveAccount = useCallback((accountId: string) => {
-        removeAccount(accountId)
+        const lastAccount = signedInAccountIds().every((id) => id === accountId);
+        signOutAccountLocally(accountId, signedInAccountIds)
+            .then(() => removeAccount(accountId))
             .then(() => {
                 unregisterAccountMailboxes(accountId);
                 setAccounts((current) => current.filter((account) => account.id !== accountId));
+                if (lastAccount) {
+                    reloadApp();
+                }
             })
             .catch((err: unknown) => {
                 setStatus({ message: describeError(err), tone: "error" });

@@ -86,6 +86,16 @@ export function signedInAccountCount(): number {
     return clients.size;
 }
 
+/** The ids of the accounts with a live `ApiClient` - every signed-in account, once `App.tsx` has synced them. */
+export function signedInAccountIds(): string[] {
+    return [...clients.keys()];
+}
+
+/** Whether `accountId` has a live `ApiClient`, i.e. is signed in. */
+export function isSignedInAccount(accountId: string): boolean {
+    return clients.has(accountId);
+}
+
 /** Test-only escape hatch - clears every held client so each test file starts from a known-empty
  * state without needing to reach into this module's private `Map` directly. */
 export function __resetApiClientsForTests(): void {

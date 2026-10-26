@@ -24,10 +24,11 @@ vi.mock("../src/lib/tauri.js", () => ({
 
 const syncApiClientsMock = vi.fn();
 const getApiClientMock = vi.fn();
+const signedInAccountIdsMock = vi.fn((): string[] => []);
 vi.mock("../src/lib/apiClients.js", () => ({
     syncApiClients: (...args: unknown[]) => syncApiClientsMock(...args),
     getApiClient: (...args: unknown[]) => getApiClientMock(...args),
-    signedInAccountCount: () => 2,
+    signedInAccountIds: () => signedInAccountIdsMock(),
 }));
 
 const unregisterAccountMailboxesMock = vi.fn();
@@ -36,9 +37,11 @@ vi.mock("../src/lib/mailboxRegistry.js", () => ({
 }));
 
 const reloadAppMock = vi.fn();
+const signOutAccountLocallyMock = vi.fn();
 vi.mock("../src/lib/accountSession.js", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../src/lib/accountSession.js")>()),
     reloadApp: () => reloadAppMock(),
+    signOutAccountLocally: (...args: unknown[]) => signOutAccountLocallyMock(...args),
 }));
 
 const setActiveAccountConfigMock = vi.fn();
@@ -104,7 +107,12 @@ beforeEach(() => {
     resolveServerMock.mockReset();
     addAccountMock.mockReset();
     removeAccountMock.mockReset();
-    syncApiClientsMock.mockReset();
+    // The accounts the last sync was handed, as `apiClients.ts` keeps them.
+    syncApiClientsMock.mockReset().mockImplementation((synced: AccountSummary[]) => {
+        signedInAccountIdsMock.mockReturnValue(synced.map((synced) => synced.id));
+    });
+    signedInAccountIdsMock.mockReset().mockReturnValue([]);
+    signOutAccountLocallyMock.mockReset().mockResolvedValue(undefined);
     getApiClientMock.mockReset().mockReturnValue(undefined);
     unregisterAccountMailboxesMock.mockReset();
     reloadAppMock.mockReset();
@@ -280,7 +288,7 @@ describe("App", () => {
         expect(await screen.findByRole("status")).toHaveTextContent("state mismatch");
     });
 
-    it("removes an account and forgets its mailbox registrations", async () => {
+    it("removes the last account after destroying its keys and indexes, forgets its mailbox registrations and reloads", async () => {
         listAccountsMock.mockResolvedValue([account]);
         removeAccountMock.mockResolvedValue(undefined);
         const { App } = await import("../src/App.js");
@@ -288,8 +296,32 @@ describe("App", () => {
         await screen.findByText(/Work.*user@example.com/);
         fireEvent.click(screen.getByRole("button", { name: "Remove" }));
         expect(await screen.findByText("No accounts signed in yet.")).toBeInTheDocument();
+        expect(signOutAccountLocallyMock).toHaveBeenCalledWith("a1", expect.any(Function));
+        expect(signOutAccountLocallyMock.mock.calls[0][1]).toBe((await import("../src/lib/apiClients.js")).signedInAccountIds);
+        expect(signOutAccountLocallyMock.mock.invocationCallOrder[0]).toBeLessThan(removeAccountMock.mock.invocationCallOrder[0]);
         expect(removeAccountMock).toHaveBeenCalledWith("a1");
         expect(unregisterAccountMailboxesMock).toHaveBeenCalledWith("a1");
+        // Its index wipe left web-client's index client signed out.
+        expect(reloadAppMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes the account only once its keys and indexes are destroyed", async () => {
+        listAccountsMock.mockResolvedValue([account, accountB]);
+        removeAccountMock.mockResolvedValue(undefined);
+        const signedOut = deferred<undefined>();
+        signOutAccountLocallyMock.mockReturnValue(signedOut.promise);
+        const { App } = await import("../src/App.js");
+        render(<App />);
+        await screen.findByText(/Personal.*me@example.org/);
+        fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[1]);
+        expect(signOutAccountLocallyMock).toHaveBeenCalledWith("b2", expect.any(Function));
+        expect(removeAccountMock).not.toHaveBeenCalled();
+        await act(async () => signedOut.resolve(undefined));
+        await waitFor(() => expect(screen.queryByText(/Personal.*me@example.org/)).not.toBeInTheDocument());
+        expect(removeAccountMock).toHaveBeenCalledWith("b2");
+        expect(unregisterAccountMailboxesMock).toHaveBeenCalledWith("b2");
+        // Another account is still signed in, and no wipe of every index ran.
+        expect(reloadAppMock).not.toHaveBeenCalled();
     });
 
     it("shows an error status when removing an account fails", async () => {
@@ -300,6 +332,8 @@ describe("App", () => {
         await screen.findByText(/Work.*user@example.com/);
         fireEvent.click(screen.getByRole("button", { name: "Remove" }));
         expect(await screen.findByRole("status")).toHaveTextContent("keychain locked");
+        expect(unregisterAccountMailboxesMock).not.toHaveBeenCalled();
+        expect(reloadAppMock).not.toHaveBeenCalled();
     });
 
     it("removes the account whose shell signed out, forgets its mailboxes and reloads the app", async () => {

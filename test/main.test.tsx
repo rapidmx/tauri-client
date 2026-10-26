@@ -62,11 +62,12 @@ describe("src/main.tsx", () => {
         expect(installNativeSearchTransportMock).toHaveBeenCalledTimes(1);
         // The Worker transport's prune is gated on how many accounts are signed in,
         // and its sign-out scoped to the active account.
-        const { signedInAccountCount } = await import("../src/lib/apiClients.js");
+        const { isSignedInAccount, signedInAccountCount } = await import("../src/lib/apiClients.js");
         const { getActiveAccountId } = await import("../src/lib/accountSession.js");
         expect(installNativeSearchTransportMock).toHaveBeenCalledWith(expect.any(Function), {
             signedInAccountCount,
             activeAccountId: getActiveAccountId,
+            isSignedIn: isSignedInAccount,
         });
         expect(createRootMock).toHaveBeenCalledWith(container);
         expect(renderMock).toHaveBeenCalledTimes(1);
