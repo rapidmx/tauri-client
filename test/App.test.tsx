@@ -27,6 +27,7 @@ const getApiClientMock = vi.fn();
 vi.mock("../src/lib/apiClients.js", () => ({
     syncApiClients: (...args: unknown[]) => syncApiClientsMock(...args),
     getApiClient: (...args: unknown[]) => getApiClientMock(...args),
+    signedInAccountCount: () => 2,
 }));
 
 const unregisterAccountMailboxesMock = vi.fn();
@@ -160,10 +161,13 @@ describe("App", () => {
         const { App } = await import("../src/App.js");
         render(<App />);
         await waitFor(() => expect(mountRouterMock).toHaveBeenCalledTimes(1));
-        const options = mountRouterMock.mock.calls[0][1] as { resolveProps: () => Promise<unknown> };
-        await options.resolveProps();
+        const options = mountRouterMock.mock.calls[0][1] as { resolveProps: () => Promise<{ signOutHost?: unknown }> };
+        const first = await options.resolveProps();
         expect(getApiClientMock).toHaveBeenCalledWith("a1");
         expect(resolveWwwShellPropsMock).toHaveBeenCalledWith(account, fakeClient);
+        // The shell signs this account out through the host it is given - the same one on every navigation.
+        expect(first.signOutHost).toEqual({ destroyKeys: expect.any(Function), finish: expect.any(Function) });
+        expect((await options.resolveProps()).signOutHost).toBe(first.signOutHost);
     });
 
     it("shows an error status when loading accounts fails", async () => {

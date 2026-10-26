@@ -10,7 +10,8 @@
  * indexes while other accounts share this webview's storage.
  *
  * `createMultiAccountWorkerTransport()` (`searchTransport.ts`) registers every mailbox the active
- * account opens a local index for or lists as accessible. The map is kept in `localStorage` (mailbox
+ * account opens a local index for or lists as accessible, and `registerUnlockedMailboxes()` every mailbox
+ * it unlocks; a sign-out destroys those mailboxes' keys and indexes. The map is kept in `localStorage` (mailbox
  * and account ids only), so a sign-out also finds the indexes an account built in an earlier session.
  * Storage that is blocked or unreadable only makes this an in-memory map for the session.
  */

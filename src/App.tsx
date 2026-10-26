@@ -24,14 +24,15 @@
  * that the effect disposes on the next switch, which removes that router's window/document listeners
  * and unmounts its pages and shell.
  *
- * The shell's own "Sign out" signs out only the active account: its local indexes are destroyed (not the
- * other accounts'), the account is removed, and the app reloads (`src/lib/accountSession.ts`).
+ * The shell's own "Sign out" signs out only the active account, through the `signOutHost` each mount passes
+ * the shell: its keys and local indexes are destroyed (not the other accounts'), the account is removed, and
+ * the app reloads (`src/lib/accountSession.ts`).
  */
 import { useCallback, useEffect, useState } from "react";
 import { mountRouter } from "@rapidrest/react/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { onShellSignOut, reloadApp, recordActiveAccount } from "./lib/accountSession.js";
-import { getApiClient, syncApiClients } from "./lib/apiClients.js";
+import { createShellSignOutHost, onShellSignOut, reloadApp, recordActiveAccount } from "./lib/accountSession.js";
+import { getApiClient, signedInAccountCount, syncApiClients } from "./lib/apiClients.js";
 import { unregisterAccountMailboxes } from "./lib/mailboxRegistry.js";
 import { createMountScope } from "./lib/mountScope.js";
 import { setActiveAccountConfig } from "./lib/rapidmxShim.js";
@@ -121,6 +122,8 @@ export function App(): React.JSX.Element {
         // started yet is skipped, and one already in flight or done loses its listeners and pages.
         const scope = createMountScope();
         const account = activeAccount;
+        // One per mount, so the shell's props keep the same object across its navigations.
+        const signOutHost = createShellSignOutHost(account.id, signedInAccountCount);
         void (async () => {
             const shell = await loadWwwShell();
             if (scope.signal.aborted) {
@@ -131,7 +134,7 @@ export function App(): React.JSX.Element {
                 {
                     rootId: APP_MOUNT_ID,
                     shell: scope.wrapShell(shell),
-                    resolveProps: () => resolveWwwShellProps(account, getApiClient(account.id)),
+                    resolveProps: async () => ({ ...(await resolveWwwShellProps(account, getApiClient(account.id))), signOutHost }),
                 },
                 scope.win,
                 scope.doc
@@ -164,10 +167,10 @@ export function App(): React.JSX.Element {
         [email]
     );
 
-    // The shell's own "Sign out" (see `src/lib/accountSession.ts`): once its local indexes are gone, the
-    // account is removed (its record and keychain refresh token), and the app reloaded, which drops what
-    // web-client's sign-out left in module state. The shell's own navigation to auth-server is refused
-    // on the Rust side, so this window never leaves the account switcher.
+    // The shell's own "Sign out" (see `src/lib/accountSession.ts`): once its keys and local indexes are
+    // gone, the account is removed (its record and keychain refresh token), and the app reloaded, which
+    // drops what web-client's sign-out left in module state (the compose "signing out" mark, a wiped
+    // index client's signed-out flag).
     useEffect(
         () =>
             onShellSignOut((accountId) => {
