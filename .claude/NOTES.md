@@ -9,6 +9,18 @@ any one machine's global Claude memory), so it travels with the code.
 decision, finding, or reverted approach worth remembering, add a dated entry under Session Log.
 Keep entries terse — this is a reference, not a transcript.
 
+## Agent model assignments (JP, 2026-10-28)
+
+Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
+
+| Kind of work | Model |
+|---|---|
+| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
+| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
+| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
+
 ## Standing decisions
 
 - **Commit discipline.** Never `git commit` unless explicitly asked for *that specific piece of
@@ -745,15 +757,3 @@ webview's own module loading, not in anything the test suite or `yarn build` exe
 - **The mailbox registry kept one account per mailbox, so the last account to list a mailbox owned it (#719).** `mailboxRegistry.ts` now keeps every account registered for a mailbox, plus the account that unlocked it with its own keys (`recordPersonalUnlock()`, called by `registerUnlockedMailboxes()` for a session that is not `.shared`). Stored as `{ uid: { accounts: [...], unlockedBy? } }` under the same key; the earlier `{ uid: "accountId" }` form is still read. New `releasedBySignOut(uid, accountId, isSignedIn)`: a sign-out takes a mailbox's keys and index when that account unlocked it itself, or when no other signed-in account is registered for it (registrations left by accounts no longer signed in don't count; an unregistered personal session is released, as before). `releasedAccountMailboxes()` lists them. `destroyAccountKeys()`, `destroyAccountLocalIndexes()` and the wrapper's fallback `destroyAll` (given `isSignedIn` from `main.tsx`; without it every registered account counts, which keeps more) all use it. So a delegate's sign-out leaves the owner's personal unlock and index of the owner's mailbox alone, and the owner's sign-out takes them even when the delegate listed the mailbox last. `resolveMailboxAccount()` (native transport only, still off) now returns the personal unlocker, else the first registered account. `unregisterAccountMailboxes()` removes the account from every entry and drops entries left empty. Tests: `mailboxRegistry.test.ts`, `accountSession.test.ts`, `searchTransport.test.ts`.
   - Deliberately left: a mailbox this account listed but never unlocked itself, which another signed-in account still lists, keeps its index and keys when this account signs out (the index directory and key session are per mailbox and shared by both accounts). The unlocker is persisted, so an owner's sign-out after a reload still takes its own mailbox's index.
 - Verification: `yarn lint`, `yarn build`, `yarn test` (175 tests, 100% coverage), `cargo build`, `cargo test` (49 Rust tests), `cargo clippy --all-targets` clean (no Rust change). Not exercised in a real window (no GUI here). The uncommitted `src-tauri/src/config.rs` change is still not part of this commit.
-
-## Agent model assignments (JP, 2026-10-28)
-
-Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
-
-| Kind of work | Model |
-|---|---|
-| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
-| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
-| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
